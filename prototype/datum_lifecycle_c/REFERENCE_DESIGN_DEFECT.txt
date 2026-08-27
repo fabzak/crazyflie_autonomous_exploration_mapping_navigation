@@ -1,0 +1,32 @@
+REFERENCE DESIGN DEFECT - DL-001
+================================
+Title:    Detector armed for one sample under stale mission intent
+Found by: C port safety-invariant I8 (lifecycle_selftest.c:359-361)
+Present in: BOTH oracle_datum_lifecycle.py (frozen reference) and datum_lifecycle.c
+Status:   NOT FIXED. Oracle deliberately left unmodified per task rule.
+
+DEFECT
+  The mission-phase freshness gate is evaluated INSIDE the DATUM_VALID handler.
+  The edges that ENTER DATUM_VALID - DATUM_ACQUIRE (stability satisfied),
+  DATUM_REVALIDATE (dwell satisfied) and RECOVER - do not re-check phase
+  freshness at the instant of entry. The gate therefore takes effect one
+  sample AFTER entry, not on it.
+
+EXPOSURE
+  Exactly one control sample (25 ms at 40 Hz) during which the module
+  publishes detector_enabled=true AND xy_allowed=true while mission intent
+  is stale (measured at phase_age = 1.0 s, i.e. 2x DL_PHASE_TIMEOUT_MS).
+  This is fail-OPEN behaviour in a contract whose premise is fail-closed.
+
+REPRODUCER  (repro_defect_i8.py / repro_defect_i8.c - identical output)
+  One fresh HOLD_LAYER sample, then 24 consecutive stale samples:
+    sample 17  age 1.0s  DATUM_ACQUIRE  detector=False  xy_allowed=False
+    sample 18  age 1.0s  DATUM_ACQUIRE  detector=False  xy_allowed=False
+    sample 19  age 1.0s  DATUM_VALID    detector=True   xy_allowed=True   <-- DEFECT
+    sample 20  age 1.0s  SETTLING       detector=False  xy_allowed=False
+
+CANDIDATE CORRECTION (design review, NOT applied)
+  Make phase freshness a precondition of the ENTRY edge into DATUM_VALID,
+  not a check performed by the DATUM_VALID handler; equivalently, evaluate
+  the gate once per sample before state dispatch. Must be re-proven in
+  simulation, then re-ported and re-differentiated.

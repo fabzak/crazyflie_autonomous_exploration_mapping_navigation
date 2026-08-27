@@ -1,0 +1,166 @@
+# Conservative real-hardware overrides for the existing cf_auto node.
+# The real launch must replace identity and map placeholders, validate every
+# map path below map_real, and remap /cmd_vel to /real_control/cmd_vel_request.
+cf_auto:
+  ros__parameters:
+    use_sim_time: false
+    map_frame: map
+    base_frame: "__ROBOT_NAME__"
+    odom_frame: "__ROBOT_NAME__/odom"
+    stabilized_frame: "__ROBOT_NAME__/base_stabilized"
+    odom_topic: "/__ROBOT_NAME__/odom"
+    up_range_topic: "/__ROBOT_NAME__/range/up"
+    down_range_topic: "/__ROBOT_NAME__/range/down"
+
+    # Safe placeholder table. The launch preflight replaces it from an
+    # arbitrary, validated list of map_real layer YAMLs; no layer count is
+    # hardcoded in the real launch path.
+    layer_ids: [1]
+    layer_heights: [0.20]
+    layer_map_urls: [""]
+    transition_from_ids: [1]
+    transition_to_ids: [1]
+    transition_points_xy: [0.0, 0.0]
+    # ROS 2 Humble cannot represent a typed empty numeric array in a YAML
+    # parameter file. This single placeholder is non-operational while the
+    # autonomy and dry-run gates retain their defaults; live autonomy must
+    # require an explicit operator-supplied mission.
+    waypoints_xyz: [0.0, 0.0, 0.20]
+    multilayer_routing_enabled: false
+
+    # [POTREBNA PROVJERA] Unvalidated engineering starting points.
+    takeoff_min_height_m: 0.20
+    takeoff_overshoot_m: 0.03
+    control_period_sec: 0.05
+    climb_speed: 0.10
+    ascend_speed: 0.10
+    descend_speed: 0.10
+    land_descent_speed: 0.10
+    land_confirm_speed: 0.10
+    max_speed: 0.20
+    min_speed: 0.05
+    ascend_min_up_clearance_m: 0.30
+    descend_min_down_clearance_m: 0.30
+
+    # Fail closed on stale pose or range data.
+    pose_timeout_sec: 0.35
+    up_maximum_age_sec: 0.50
+    down_maximum_age_sec: 0.50
+    safety_maximum_sensor_age_sec: 0.35
+    safety_freshness_timeout_sec: 0.50
+
+    # Disable unvalidated active maneuvers for the initial real-hardware path.
+    localize_enabled: false
+    vertical_bypass_enabled: false
+    yaw_align_enabled: false
+    max_replans_per_waypoint: 1
+
+
+cf_auto_planar_frame:
+  ros__parameters:
+    use_sim_time: false
+    odom_topic: "/__ROBOT_NAME__/odom"
+    odom_frame: "__ROBOT_NAME__/odom"
+    planar_frame: "real_nav/amcl_base"
+
+
+# Odom-aligned collision scan. The real launch remaps its localization output
+# away so exactly one merger owns each consumed scan topic.
+range_scan_merger:
+  ros__parameters:
+    use_sim_time: false
+    robot_name: "__ROBOT_NAME__"
+    stable_frame: "__ROBOT_NAME__/odom"
+    scan_frame: "__ROBOT_NAME__/range_scan_horizontal"
+    map_frame: map
+    publish_rate_hz: 10.0
+    freshness_timeout_sec: 0.50
+    maximum_sensor_age_sec: 0.35
+    future_timestamp_tolerance_sec: 0.05
+    use_gazebo_full_scan: false
+    map_free_temporal_confirmation_count: 1
+    # [POTREBNA PROVJERA] Used only if vertical geometry is temporarily absent;
+    # the independent watchdog still denies motion when a range stream is stale.
+    fallback_floor_height_m: 0.0
+    fallback_ceiling_height_m: 0.50
+
+
+# Body-yaw-following scan used by AMCL.
+range_scan_merger_amcl:
+  ros__parameters:
+    use_sim_time: false
+    robot_name: "__ROBOT_NAME__"
+    stable_frame: "__ROBOT_NAME__/base_stabilized"
+    scan_frame: "__ROBOT_NAME__/amcl_scan"
+    map_frame: map
+    publish_rate_hz: 10.0
+    freshness_timeout_sec: 0.50
+    maximum_sensor_age_sec: 0.35
+    future_timestamp_tolerance_sec: 0.05
+    use_gazebo_full_scan: false
+    map_free_temporal_confirmation_count: 1
+    # [POTREBNA PROVJERA] Relative to the initial 0.20 m placeholder layer.
+    fallback_floor_height_m: -0.20
+    fallback_ceiling_height_m: 0.30
+
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    frame_id: map
+    topic_name: map
+    # yaml_filename is injected only after map_real path validation.
+
+
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    global_frame_id: map
+    odom_frame_id: "__ROBOT_NAME__/odom"
+    base_frame_id: "real_nav/amcl_base"
+    scan_topic: scan
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+
+    # Operator-supplied initial pose is mandatory on every run.
+    set_initial_pose: false
+    always_reset_initial_pose: true
+    first_map_only: false
+
+    laser_model_type: likelihood_field
+    laser_min_range: 0.05
+    laser_max_range: 3.49
+    max_beams: 180
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.2
+    z_hit: 0.6
+    z_rand: 0.4
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+
+    min_particles: 500
+    max_particles: 3000
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+    resample_interval: 1
+    update_min_a: 0.1
+    update_min_d: 0.10
+    alpha1: 0.05
+    alpha2: 0.02
+    alpha3: 0.2
+    alpha4: 0.05
+    alpha5: 0.2
+    transform_tolerance: 1.0
+    tf_broadcast: true
+    save_pose_rate: 0.5
+
+
+lifecycle_manager_cf_auto:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    node_names: [map_server, amcl]
+    bond_timeout: 0.0

@@ -1,0 +1,98 @@
+# Real Crazyswarm2 inventory. This file is deliberately non-runnable until the
+# operator replaces both identity placeholders and explicitly enables the robot.
+fileversion: 3
+
+robots:
+  __ROBOT_NAME__:
+    enabled: false
+    uri: "__RADIO_URI__"
+    initial_position: [0.0, 0.0, 0.0]
+    type: cf21_real
+    reference_frame: "__ROBOT_NAME__/odom"
+
+robot_types:
+  cf21_real:
+    motion_capture:
+      tracking: "librigidbodytracker"
+      marker: default_single_marker
+      dynamics: default
+    big_quad: false
+
+all:
+  firmware_logging:
+    enabled: true
+    # Pose is intentionally absent. Odometry is the single pose/TF source for
+    # this no-motion-capture real path.
+    default_topics:
+      odom:
+        # The odom callback is the ONLY publisher of the dynamic
+        # <robot>/odom -> <robot> TF, and layer_explore looks transforms up at
+        # each scan's own stamp with tf_timeout_sec.  At 10 Hz the newest TF
+        # sample is routinely older than the requested time and observations
+        # are silently dropped, so this rate is a mapping parameter, not just
+        # a telemetry one.  Verify the link sustains it in the preflight.
+        frequency: 20
+      status:
+        # 2 Hz against a 1.0 s freshness timeout leaves one packet of margin
+        # before both the control-adapter gate and the (permanently latching)
+        # safety watchdog trip in flight.
+        frequency: 10
+    # One generic log packet carries every Multi-ranger channel. The adapter
+    # validates this order before splitting it into six LaserScan topics.
+    custom_topics:
+      range_raw:
+        frequency: 10
+        vars:
+          - range.front
+          - range.right
+          - range.back
+          - range.left
+          - range.up
+          - range.zrange
+      # DIAGNOSTIC ONLY, added 2026-08-22 after the tumble/crash, to decide
+      # whether the aircraft really translated while odometry reported it
+      # stationary, or whether the ranger changes were geometric.
+      #
+      # squal is the discriminator.  Near-zero deltas WITH healthy squal means
+      # the sensor could see the floor and there genuinely was no lateral
+      # motion.  Near-zero deltas WITH low squal means the sensor was blind, so
+      # the estimator had no lateral observation at all and cannot be trusted
+      # to have noticed motion.  outlierCount exposes flow the estimator
+      # measured and then rejected, which is the third distinct failure.
+      # stateEstimate.v[xy] is what the controller actually acted on.
+      #
+      # 15 bytes (1+2+2+1+1+4+4), well inside the 26-byte CRTP log packet, at the
+      # same 10 Hz as range_raw so the validated odom rate is not disturbed.
+      flow_raw:
+        frequency: 10
+        vars:
+          - motion.motion
+          - motion.deltaX
+          - motion.deltaY
+          - motion.squal
+          - motion.outlierCount
+          - stateEstimate.vx
+          - stateEstimate.vy
+  firmware_params:
+    commander:
+      enHighLevel: 1
+    stabilizer:
+      estimator: 2  # Kalman
+      controller: 1  # PID
+    kalman:
+      # The Flow deck sits ~1.4 cm above the floor, below its minimum working
+      # range, so a grounded Crazyflie feeds the estimator unusable optical
+      # flow and its position integrates away: measured +39 m after being
+      # hand-carried, and ~7 m within 20 s of simply sitting still.  The
+      # estimate only zeroes on boot, and layer_explore maps into a fixed
+      # +/-16.25 m grid centred on the odometry origin.
+      #
+      # Declaring this here both resets the estimator at connect and creates
+      # the ROS parameter <robot>.params.kalman.resetEstimation, so it can be
+      # re-triggered immediately before takeoff.  The firmware self-clears the
+      # flag after one reset (estimator_kalman.c:221-223), so this is a
+      # one-shot, not a permanent hold-down.
+      resetEstimation: 1
+  broadcasts:
+    num_repeats: 15
+    delay_between_repeats_ms: 1

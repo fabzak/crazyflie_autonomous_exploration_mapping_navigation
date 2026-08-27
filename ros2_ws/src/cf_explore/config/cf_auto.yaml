@@ -1,0 +1,356 @@
+# cf_auto - configuration for the autonomous layer mission.
+# ROS 2 parameter files cannot nest lists, so layer data is kept in flat
+# parallel keys.
+
+cf_auto:
+  ros__parameters:
+    use_sim_time: true
+
+    map_frame: "map"
+    base_frame: "crazyflie/base_footprint"
+    odom_topic: "/crazyflie/odom"
+
+    # --- layer table ---
+    # Deliberately absent: layer_ids, layer_heights and layer_map_urls are all
+    # discovered from the saved map directory by cf_auto.launch.py, which reads
+    # each layer's altitude from its own map_layer_N.json z_height.  The map
+    # directory is the only thing that knows how many layers exist, so the count
+    # is never written down a second time here - three saved layers means a
+    # three-layer mission, five means five, with no edit to this file.
+    # All layers share one world coordinate frame, so a pose carries across a
+    # map switch unchanged.
+    layer_altitude_tolerance_m: 0.15      # How close a waypoint z must be to a layer [m]
+
+    # --- 3D waypoints, flattened [x, y, z, x, y, z, ...] ---
+    # The waypoint count is independent of the layer count; each waypoint only
+    # has to sit on some discovered layer's altitude.
+    waypoints_xyz: [-2.0,  2.0, 0.5,
+                      0.0, -2.5, 1.0,
+                      0.5,  2.0, 1.5]
+
+    # --- vertical transitions ---
+    # One XY per upward hop; each point must be free and outside the inflation
+    # margin on BOTH of the maps it connects.  These are hand-measured, so they
+    # cannot be discovered - but a hop naming a layer the map directory does not
+    # have is dropped by cf_auto.launch.py, which lets this one table serve
+    # whatever layer stack is actually saved.
+    transition_from_ids: [1, 2, 3]
+    transition_to_ids:   [2, 3, 4]
+    transition_points_xy: [0.0, 0.0,
+                           0.5,  2.0,
+                           2.0,  0.0]
+    ascend_speed: 0.25                 # Climb speed between layers [m/s]
+    ascend_altitude_tolerance_m: 0.05  # Close enough to the target altitude [m]
+    ascend_timeout_sec: 25.0           # [s]
+    ascend_min_up_clearance_m: 0.35    # Headroom needed to keep climbing [m]
+    up_range_topic: "/crazyflie/range/up"
+    up_maximum_age_sec: 0.5            # Up sensor freshness limit [s]
+    ascend_hold_gain: 0.6              # Gentle XY hold over the transition point
+    ascend_hold_max_speed: 0.20        # [m/s]
+    map_switch_timeout_sec: 20.0       # [s]
+    relocalize_settle_sec: 3.0         # [s]
+
+    # Downward transitions, the mirror of the ascent gate.  The down ranger
+    # reports height above the nearest solid surface below (floor, pillar cap,
+    # furniture), NOT the altitude of the layer underneath, so it is used only
+    # as a safety gate; arrival is decided on odometry altitude exactly as the
+    # climb decides it.  A missing or stale reading refuses the descent.
+    descend_speed: 0.25                # Descent speed between layers [m/s]
+    descend_timeout_sec: 25.0          # [s]
+    # Floor clearance that must remain once the full drop is flown.  Starts at
+    # the ascent's proven 0.35 m headroom figure; it has NOT been independently
+    # measured for descent and is a candidate for tuning.
+    descend_min_down_clearance_m: 0.35
+
+    # --- static multi-layer routing ---
+    # Plan over every saved layer map, not only the one map_server is serving,
+    # and pick the shortest real 3D route (horizontal metres + vertical metres,
+    # with no artificial layer-change penalty).  The cache is planning-only:
+    # map_server and AMCL still see exactly one layer at a time.
+    # Set false to restore the original single-layer, upward-only behaviour.
+    multilayer_routing_enabled: true
+
+    # --- live unmapped-obstacle vertical bypass ---
+    # For an obstacle that is physically there but in none of the saved maps.
+    # It is the LAST resort, never the first: the existing same-layer response
+    # (safety stop -> ESCAPE -> mark the obstacle -> replan) runs
+    # max_replans_per_waypoint times first, and only a route that is still
+    # blocked after all of that arms a probe.  A mapped obstacle is handled by
+    # the static 3D planner and never reaches this path.
+    # ALL VALUES BELOW ARE SIMULATION STARTING POINTS, NOT MEASURED FIGURES.
+    vertical_bypass_enabled: true
+    # Discrete candidate altitudes, never a continuous sweep.  3 steps of
+    # 0.10 m bounds the excursion to +-0.30 m, comfortably inside the 0.50 m
+    # layer spacing, so a probe can never stray into a neighbouring layer's
+    # altitude band.
+    vertical_probe_step_m: 0.10
+    vertical_probe_max_steps: 3
+    vertical_probe_min_altitude_m: 0.30    # never descend below this [m]
+    vertical_probe_max_altitude_m: 2.30    # never climb above this [m]
+    # Evidence bar for calling a candidate altitude clear: this many fresh
+    # in-cone returns AND this much elapsed time.  One sample is never enough -
+    # a 27 deg cone produces spurious single misses.
+    vertical_probe_required_samples: 5
+    vertical_probe_dwell_sec: 1.0
+    vertical_probe_timeout_sec: 12.0       # per candidate altitude
+    vertical_bypass_total_timeout_sec: 120.0
+    vertical_probe_max_xy_drift_m: 0.30
+    # The four ranger fans are 27 deg wide and 90 deg apart, so only 108 of
+    # 360 deg is sensed.  Turning the nose onto the travel line before trusting
+    # any "clear" reading is what makes the reading mean anything at all.
+    bypass_face_travel_direction: true
+    bypass_face_yaw_rate: 0.40             # [rad/s]
+    bypass_face_tolerance_rad: 0.12        # inside the 13.5 deg cone half-width
+    # The crossing itself: slow, short and continuously guarded.
+    bypass_speed: 0.15                     # [m/s]
+    bypass_sense_range_m: 2.0
+    bypass_required_forward_clearance_m: 0.60
+    # Distance flown PAST the measured obstacle stand-off before the airframe
+    # counts as through.  A clear front ray only proves the beam misses the
+    # obstacle, not that the body has passed it, so this must cover the
+    # obstacle's own depth plus the airframe radius.  0.50 m is a conservative
+    # guess for the simulated walls, NOT a measured obstacle depth.
+    bypass_pass_margin_m: 0.50
+    bypass_min_cross_m: 0.30
+    bypass_max_cross_m: 1.50               # hard distance bound
+    bypass_max_duration_sec: 30.0          # hard time bound
+    bypass_clear_hold_sec: 0.6
+
+    # --- landing ---
+    # Descent follows the down ranger's measured ground clearance, never
+    # odometry z, which is height above the world origin instead.
+    down_range_topic: "/crazyflie/range/down"
+    # Freshness gate [s], checked on arrival time and header stamp.  A stale
+    # reading pauses the descent instead of continuing blind; after
+    # land_stale_grace_sec the landing is abandoned into LAND_ABORTED.
+    down_maximum_age_sec: 0.3
+    land_stale_grace_sec: 1.0          # [s]
+    land_descent_speed: 0.25           # Main descent speed [m/s]
+    land_confirm_speed: 0.10           # Slower once inside the touchdown band [m/s]
+    # The sensor sits 0.0374 m above base_footprint, so 0.10 m of measured
+    # clearance is about 0.06 m of odometry z.
+    land_touchdown_height_m: 0.10      # Clearance counted as touchdown [m]
+    land_contact_hold_sec: 0.5         # Debounce, so one noisy sample cannot end the flight [s]
+    land_timeout_sec: 30.0             # Bounds every landing path [s]
+
+    # --- flight / following ---
+    control_period_sec: 0.05    # Control loop period [s]
+    climb_speed: 0.4            # Takeoff climb speed [m/s]
+    max_speed: 0.55             # Maximum flight speed [m/s]
+    min_speed: 0.08             # Minimum flight speed [m/s]
+    speed_gain: 0.9             # Speed per metre of remaining distance
+    lookahead_distance_m: 0.5   # Pure-pursuit lookahead [m]
+    goal_tolerance_m: 0.30      # Distance at which a waypoint counts as reached [m]
+
+    # --- planning ---
+    # Obstacle inflation: 10 * 0.05 m = 0.50 m of clearance, enough to cover the
+    # measured AMCL error (up to ~0.6 m) on the tightest leg.
+    inflation_cells: 10
+    occupied_threshold: 50      # >= this is blocked; unknown (-1) is also blocked
+    heuristic_weight: 1.1       # > 1 makes A* greedier and faster
+    snap_radius_cells: 20       # How far to search for a free start/goal cell
+    # Re-check the straight segment from the live pose to the lookahead point.
+    follow_segment_check: true
+    path_sample_spacing_m: 0.25 # Path is resampled this finely for pure pursuit [m]
+
+    # --- post-takeoff localization refinement ---
+    localize_enabled: true
+    localize_duration_sec: 12.0     # Length of the sweep [s]
+    # Keep at 0: with only ~108 deg of ranger coverage in this repetitive
+    # pillar hall, spinning lets AMCL lock onto a 180 deg alias.  The XY sway
+    # below still gives the filter its translation updates.
+    localize_yaw_rate: 0.0          # [rad/s]
+    localize_sway_amplitude_m: 0.25 # [m]
+    localize_sway_period_sec: 5.0   # [s]
+
+    # --- live collision guard ---
+    # Runs on /scan_safety, so a sensed obstacle stops the drone regardless of
+    # AMCL error.  Distances are a bit wider than layer_explore's because
+    # cf_auto flies sideways too and often sees an obstacle obliquely first.
+    safety_enabled: true
+    safety_scan_topic: "/scan_safety"
+    scan_frame: "crazyflie/range_scan_horizontal"
+    safety_stop_distance_m: 0.08       # Hard stop [m]
+    safety_slow_distance_m: 0.25       # Speed tapers below this [m]
+    safety_influence_distance_m: 0.30  # Obstacles nearer than this constrain direction [m]
+    safety_maximum_sensor_age_sec: 0.5 # Stale scan means stop, never "clear" [s]
+    safety_freshness_timeout_sec: 0.7  # [s]
+    safety_block_replan_sec: 2.0       # Blocked this long => mark obstacle and replan [s]
+    safety_mark_radius_m: 0.25         # Radius burned into the grid per obstacle [m]
+    safety_goal_protect_m: 0.60        # Never wall off the active waypoint [m]
+    # Active retreat before replanning; the velocity projection can only remove
+    # motion, never reverse it.
+    escape_speed: 0.25                 # [m/s]
+    escape_timeout_sec: 5.0            # [s]
+
+    # --- heading alignment (implemented but off; never re-tested since the
+    # scan frame was fixed) ---
+    yaw_align_enabled: false
+    yaw_kp: 0.9                     # P gain on heading error
+    max_yaw_rate: 0.35              # Stay under the 0.4 rad/s controller cap [rad/s]
+    yaw_deadband_rad: 0.12          # [rad]
+    yaw_min_speed: 0.10             # Never spin while stationary [m/s]
+
+    # --- stuck handling (secondary; the guard reacts first) ---
+    stuck_timeout_sec: 8.0       # No progress for this long => replan [s]
+    stuck_progress_m: 0.10       # Movement that counts as progress [m]
+    max_replans_per_waypoint: 3
+    pose_timeout_sec: 1.0        # How long a TF pose stays usable [s]
+
+
+# AMCL's ground-plane base frame.  AMCL estimates a planar pose, so localizing
+# the real-altitude crazyflie/base_stabilized pushed the UAV's height into
+# map -> odom as -z and flattened the drone onto the map in RViz.  This node
+# publishes a sibling frame with the same x/y/yaw but z = 0, which AMCL
+# localizes instead; base_stabilized keeps its real altitude and its meaning.
+# TF-only: no velocity, no mission state, no feedback into cf_auto.
+cf_auto_planar_frame:
+  ros__parameters:
+    use_sim_time: true
+    odom_topic: "/crazyflie/odom"
+    odom_frame: "crazyflie/odom"
+    planar_frame: "cf_auto/amcl_base"
+
+
+# Passive RViz2 overview of every saved layer at its real altitude, on
+# /layer_map_markers.  Appearance only - it has no control authority and feeds
+# nothing back into cf_auto.  layer_map_yamls, layer_ids and layer_heights are
+# supplied by cf_auto.launch.py from the layer table above, so the layer set is
+# never described twice.
+cf_auto_layer_visualizer:
+  ros__parameters:
+    use_sim_time: true
+    map_frame: "map"
+    cell_thickness_m: 0.04      # Slice thickness [m]; rendering only, it is
+                                # not a measured wall height.  Well under the
+                                # 0.5 m layer spacing so slices stay readable.
+    cell_footprint_factor: 0.9  # Cube width as a fraction of one map cell;
+                                # < 1 stops neighbouring cubes z-fighting.
+    marker_alpha: 0.6           # Lower layers stay visible through upper ones
+    label_margin_m: 0.8         # Label offset past the mapped structure [m]
+    label_stagger_m: 0.6        # Keeps labels apart in a top-down view [m]
+    text_height_m: 0.4          # Label glyph height [m]
+    max_cells_per_layer: 200000 # Guard; the saved maps hold ~2900 each
+    # Active-layer emphasis, driven by the diagnostic /cf_auto/active_layer.
+    # Opacity plus an " - ACTIVE" label suffix, so the cue never depends on
+    # colour alone.  Before any layer is known every layer uses marker_alpha.
+    highlight_active_layer: true
+    active_alpha: 0.95          # Opacity of the layer cf_auto is flying
+    inactive_alpha: 0.25        # Other layers stay visible, just recessed
+    # RViz2's MarkerArray display subscribes volatile unless its durability is
+    # set to Transient Local, and a volatile subscriber is not given a latched
+    # publisher's retained sample.  A slow republish covers that case.
+    republish_period_sec: 5.0   # 0 disables, leaving only the initial latch
+
+
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    frame_id: "map"
+    topic_name: "map"
+    # yaml_filename is supplied by cf_auto.launch.py (resolved at launch time).
+
+
+# Two instances of the same merger, differing only in `stable_frame`, which is
+# the frame the output ray bearings are computed in - a real reprojection.
+#
+# 1) Safety instance, odom-aligned.  Publishes /scan_safety for the collision
+#    guard; its /scan is remapped away so the AMCL instance owns that topic.
+range_scan_merger:
+  ros__parameters:
+    use_sim_time: true
+    robot_name: "crazyflie"
+    stable_frame: "crazyflie/odom"
+    scan_frame: "crazyflie/range_scan_horizontal"
+    map_frame: "map"
+    map_free_temporal_confirmation_count: 1
+
+
+# 2) AMCL instance - level and yaw-following (crazyflie/base_stabilized).
+#    Bearings become body-relative, so AMCL observes airframe yaw, while the
+#    scan plane stays gravity-aligned with the level 2D map.  Floor and ceiling
+#    are estimated in stable_frame, so the fallbacks below are body-relative
+#    (the floor sits ~0.55 m below the body at layer-1 hover, not at z = 0).
+range_scan_merger_amcl:
+  ros__parameters:
+    use_sim_time: true
+    robot_name: "crazyflie"
+    stable_frame: "crazyflie/base_stabilized"
+    scan_frame: "crazyflie/amcl_scan"
+    map_frame: "map"
+    map_free_temporal_confirmation_count: 1
+    fallback_floor_height_m: -0.55
+    fallback_ceiling_height_m: 1.93
+
+
+amcl:
+  ros__parameters:
+    use_sim_time: true
+
+    global_frame_id: "map"
+    odom_frame_id: "crazyflie/odom"
+    # Level, yaw-following robot base, so rotation is observable without
+    # importing the airframe's tilt.  /scan comes from the matching
+    # base_stabilized merger instance.
+    #
+    # AMCL estimates this frame as a *planar* pose and then publishes
+    # map -> odom = (map -> base) * (base -> odom).  base_stabilized sits at
+    # the real flight altitude, so that identity forced map -> odom.z to
+    # -1.06 m on layer 2 and flattened the drone onto the map plane in RViz.
+    # cf_auto_planar_frame publishes a sibling of base_stabilized with the same
+    # x/y/yaw but z = 0; AMCL measures only x, y and yaw, so localization is
+    # unaffected and the altitude stops being cancelled.
+    base_frame_id: "cf_auto/amcl_base"
+    scan_topic: "scan"
+
+    # Crazyflie XY motion is holonomic.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+
+    # The user must supply the estimate from RViz2 on every run.
+    set_initial_pose: false
+    always_reset_initial_pose: true
+    first_map_only: false
+
+    laser_model_type: "likelihood_field"
+    laser_min_range: 0.05
+    laser_max_range: 4.0
+    max_beams: 180
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.2
+    z_hit: 0.6
+    z_rand: 0.4
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+
+    min_particles: 500
+    max_particles: 3000
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+    resample_interval: 1
+    update_min_a: 0.1     # Rotation between filter updates [rad]
+    update_min_d: 0.10    # Translation between filter updates [m]
+    # Rotation noise is kept much smaller than translation noise: trust the
+    # odometry yaw and let the scan correct position.  Yaw is only weakly
+    # observable with ~108 deg of ranger coverage, and larger alpha2/alpha4
+    # let the yaw hypothesis random-walk away.
+    alpha1: 0.05
+    alpha2: 0.02
+    alpha3: 0.2
+    alpha4: 0.05
+    alpha5: 0.2
+
+    transform_tolerance: 1.0
+    tf_broadcast: true
+    save_pose_rate: 0.5
+
+
+lifecycle_manager_cf_auto:
+  ros__parameters:
+    use_sim_time: true
+    autostart: true
+    node_names: ["map_server", "amcl"]
+    bond_timeout: 0.0

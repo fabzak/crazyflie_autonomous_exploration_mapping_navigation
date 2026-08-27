@@ -1,0 +1,266 @@
+<?xml version="1.0" ?>
+
+<!-- File: worlds/indoor_multi_room.sdf -->
+<sdf version="1.8">
+  <world name="demo">
+    <!-- Core systems -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+
+    <!-- Lighting -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Floor -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>20 20</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.85 0.85 0.85 1</ambient>
+            <diffuse>0.85 0.85 0.85 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Robot -->
+    <include>
+      <uri>model://crazyflie</uri>
+      <name>crazyflie</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <model name="ceiling">
+      <static>true</static>
+      <pose>0 0 2.5 0 0 0</pose>
+
+      <link name="ceiling_link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>20 20 0.05</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>20 20 0.05</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 0.15</ambient>
+            <diffuse>0.8 0.8 0.8 0.15</diffuse>
+            <specular>0.1 0.1 0.1 0.15</specular>
+          </material>
+          <transparency>0.7</transparency>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== Perimeter walls (8 x 8 m room) ===== -->
+    <!-- north wall (y = +4), length along X -->
+    <model name="perimeter_north">
+      <static>true</static>
+      <pose>0 4 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>8 0.2 2.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>8 0.2 2.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.75 1</ambient>
+            <diffuse>0.7 0.7 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- south wall (y = -4), length along X -->
+    <model name="perimeter_south">
+      <static>true</static>
+      <pose>0 -4 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>8 0.2 2.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>8 0.2 2.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.75 1</ambient>
+            <diffuse>0.7 0.7 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- west wall (x = -4), length along Y -->
+    <model name="perimeter_west">
+      <static>true</static>
+      <pose>-4 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.2 8 2.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.2 8 2.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.75 1</ambient>
+            <diffuse>0.7 0.7 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- east wall (x = +4), length along Y -->
+    <model name="perimeter_east">
+      <static>true</static>
+      <pose>4 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.2 8 2.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.2 8 2.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.75 1</ambient>
+            <diffuse>0.7 0.7 0.75 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== Internal partitions (create multiple rooms) ===== -->
+    <!-- Central vertical wall @ x=0 with 1m doorway at y≈0 -->
+    <model name="partition_v_top">
+      <static>true</static>
+      <pose>0 2.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 3.5 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 3.5 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="partition_v_bottom">
+      <static>true</static>
+      <pose>0 -2.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 3.5 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 3.5 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <model name="column">
+      <static>true</static>
+      <pose>-2.5 -2.5 0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.5 0.5 2.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.5 0.5 2.0</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Horizontal wall across entire space (y=0) with 1m doorway near x=-2 -->
+    <model name="partition_h_y0_left">
+      <static>true</static>
+      <pose>-2.5 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>3.5 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>3.5 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="partition_h_y0_right">
+      <static>true</static>
+      <pose>1.25 0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.0 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.0 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Extra rooming: left block @ y=2 (door at x=-2) -->
+    <model name="partition_h_y2_leftA">
+      <static>true</static>
+      <pose>-3.25 2 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="partition_h_y2_leftB">
+      <static>true</static>
+      <pose>-0.75 2 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Extra rooming: right block @ y=-2 (door at x=+2) -->
+    <model name="partition_h_y-2_rightA">
+      <static>true</static>
+      <pose>0.75 -2 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.5 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="partition_h_y-2_rightB">
+      <static>true</static>
+      <pose>3.25 -2 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.5 0.2 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.5 0.2 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

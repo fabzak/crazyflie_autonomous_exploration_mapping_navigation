@@ -1,0 +1,114 @@
+# Shared real sensor/control/safety boundary. Hardware identity placeholders are
+# rejected by the real launch preflight. The launch-level autonomy gate also
+# defaults to false; dry_run below independently prevents hardware interfaces.
+real_sensor_adapter:
+  ros__parameters:
+    input_topic: "/__ROBOT_NAME__/range_raw"
+    robot_name: "__ROBOT_NAME__"
+    configured_variable_order:
+      - range.front
+      - range.right
+      - range.back
+      - range.left
+      - range.up
+      - range.zrange
+    frames.front: "__ROBOT_NAME__/range_front"
+    frames.right: "__ROBOT_NAME__/range_right"
+    frames.back: "__ROBOT_NAME__/range_back"
+    frames.left: "__ROBOT_NAME__/range_left"
+    frames.up: "__ROBOT_NAME__/range_up"
+    frames.down: "__ROBOT_NAME__/range_down"
+    range_min_m: 0.01
+    range_max_m: 3.49
+    invalid_at_or_above_mm: 8000.0
+    max_input_age_sec: 0.35
+    future_tolerance_sec: 0.05
+    scan_rate_hz: 10.0
+
+real_safety_watchdog:
+  ros__parameters:
+    robot_name: "__ROBOT_NAME__"
+    command_topic: "/real_control/cmd_vel_request"
+    permit_topic: "/real_safety/motion_permit"
+    # [POTREBNA PROVJERA] Freshness limits are engineering starting points.
+    # 20 Hz heartbeat.  The consumer's permit_timeout_sec must cover several
+    # missed samples or ordinary scheduler jitter forces an in-flight landing.
+    permit_period_sec: 0.05
+    command_timeout_sec: 0.25
+    odom_timeout_sec: 0.35
+    horizontal_range_timeout_sec: 0.50
+    vertical_range_timeout_sec: 0.50
+    status_timeout_sec: 1.00
+    future_stamp_tolerance_sec: 0.05
+    require_can_fly: true
+    # Measured on hardware: flat on the floor the Flow ToF reports 0 mm (its
+    # no-measurement code), and it only starts returning a valid distance
+    # after the airframe has climbed clear of its minimum range.  IS_FLYING
+    # is asserted before that, so this bound must outlast the takeoff
+    # transient while still catching a genuine loss of the floor signal.
+    airborne_down_loss_timeout_sec: 2.0
+    # Raw battery/radio semantics require hardware evidence before thresholds
+    # are enabled. Negative values deliberately disable only these optional
+    # thresholds; freshness and CAN_FLY remain mandatory.
+    battery_min_voltage_v: -1.0
+    rssi_min_value: -1.0
+    rssi_max_value: -1.0
+    min_link_receive_ratio: -1.0
+    max_link_latency_ms: -1.0
+
+real_control_adapter:
+  ros__parameters:
+    dry_run: true
+    robot_name: "__ROBOT_NAME__"
+    command_request_topic: "/real_control/cmd_vel_request"
+    motion_permit_topic: "/real_safety/motion_permit"
+    odom_topic: "/__ROBOT_NAME__/odom"
+    status_topic: "/__ROBOT_NAME__/status"
+    cf_auto_status_topic: "/cf_auto/status"
+    virtual_land_service: "/real_control/land_request"
+    velocity_world_topic: "/__ROBOT_NAME__/cmd_velocity_world"
+    hardware_service_prefix: "/__ROBOT_NAME__"
+    world_frame: "__ROBOT_NAME__/odom"
+
+    # Autonomy may never arm this aircraft.  The operator arms with Alt and
+    # releases the autonomy gate with G; this adapter only verifies that the
+    # firmware supervisor already reports ARMED.  Authorization is a
+    # heartbeat, so a dead operator node revokes it and an airborne vehicle
+    # is landed by the normal gate-failure path.
+    require_operator_authorization: true
+    operator_timeout_sec: 0.50
+    operator_authorization_topic: "/real_operator/autonomy_authorized"
+
+    control_period_sec: 0.05
+    command_timeout_sec: 0.25
+    odom_timeout_sec: 0.35
+    # 12 permit samples at 20 Hz.  The previous 0.25 s against a 5 Hz
+    # heartbeat left 50 ms of jitter margin.
+    permit_timeout_sec: 0.60
+    status_timeout_sec: 1.00
+    future_stamp_tolerance_sec: 0.05
+    # Entering LAND_HANDOVER stops the setpoint stream, and the firmware cuts
+    # the motors 2.0 s after the last setpoint
+    # (COMMANDER_WDT_TIMEOUT_SHUTDOWN, supervisor.c:56).  notify and land must
+    # both complete inside that budget, so neither may block for 2.0 s.
+    service_timeout_sec: 0.50
+    # ros2 launch escalates SIGINT to SIGTERM after ~5 s and the same Ctrl-C
+    # kills crazyflie_server, so the land services vanish almost immediately.
+    # Ctrl-C is NOT a safe abort; the operator L key is.
+    shutdown_land_timeout_sec: 4.0
+
+    # [POTREBNA PROVJERA] Conservative initial motion envelope.
+    max_xy_speed_mps: 0.20
+    max_vz_mps: 0.10
+    max_yaw_rate_radps: 0.30
+    z_hold_kp: 0.80
+    max_z_hold_speed_mps: 0.10
+    takeoff_height_m: 0.20
+    takeoff_tolerance_m: 0.05
+    takeoff_duration_sec: 3.0
+    landing_height_m: 0.05
+    landing_tolerance_m: 0.05
+    land_duration_sec: 3.0
+    arm_confirmation_timeout_sec: 3.0
+    takeoff_confirmation_timeout_sec: 8.0
+    landing_confirmation_timeout_sec: 8.0

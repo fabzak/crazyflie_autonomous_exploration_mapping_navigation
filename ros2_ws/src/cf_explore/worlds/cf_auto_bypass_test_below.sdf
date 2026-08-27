@@ -1,0 +1,248 @@
+<?xml version="1.0" ?>
+<!-- TEST-ONLY world for live-bypass acceptance scenario H (passage BELOW).
+     Generated from the COMMITTED crazyflie_world.sdf plus one unmapped
+     SUSPENDED beam.  Production world untouched; select with world:=<path>. -->
+<sdf version="1.8">
+  <world name="demo">
+
+    <!-- Core systems (Gazebo Harmonic) -->
+    <plugin filename="gz-sim-physics-system"           name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system"           name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system"               name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-user-commands-system"     name="gz::sim::systems::UserCommands"/>
+
+    <!-- Physics -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- Scene -->
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- Sun -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.85 0.85 0.85 1</ambient>
+            <diffuse>0.85 0.85 0.85 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="ceiling">
+      <static>true</static>
+      <pose>0 0 2.5 0 0 0</pose>
+
+      <link name="ceiling_link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>75 75 0.05</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>75 75 0.05</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 0.15</ambient>
+            <diffuse>0.8 0.8 0.8 0.15</diffuse>
+            <specular>0.1 0.1 0.1 0.15</specular>
+          </material>
+          <transparency>0.7</transparency>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+
+    <!-- CRTA_v4 building
+         Place the mesh at:
+           models/CRTA_v4/meshes/CRTA_mesh.dae -->
+    <!-- Building spans 0–44.3 m in X and Y in mesh space.
+         Offset by -22.15 in X and Y to centre it at world origin
+         so the crazyflie spawns in the middle of the building. -->
+    <model name="CRTA_v4">
+      <static>true</static>
+      <pose>-13.5 -5.5 0 0 0 0</pose>
+      <link name="link_0">
+        <inertial>
+          <mass>1</mass>
+          <inertia>
+            <ixx>0.166667</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.166667</iyy><iyz>0</iyz>
+            <izz>0.166667</izz>
+          </inertia>
+        </inertial>
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>model://CRTA_v4/meshes/CRTA_mesh.dae</uri>
+              <scale>1 1 1</scale>
+            </mesh>
+          </geometry>
+          <cast_shadows>true</cast_shadows>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <mesh>
+              <uri>model://CRTA_v4/meshes/CRTA_mesh.dae</uri>
+              <scale>1 1 1</scale>
+            </mesh>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1</mu><mu2>1</mu2></ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1e13</kp><kd>1</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+      </link>
+    </model>
+
+    wall = """
+    <!-- Block the corridor toward the second large room.
+         This closes the corridor at the physical location of the previous spawn area. -->
+    <model name="corridor_block_wall">
+      <static>true</static>
+      <pose>0.0 5.5 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>30.0 0.2 2.5</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>30.0 0.2 2.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.65 0.65 0.65 1</ambient>
+            <diffuse>0.65 0.65 0.65 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    """
+
+    <!-- Crazyflie robot -->
+    <include>
+      <uri>model://crazyflie</uri>
+      <name>crazyflie</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+
+    <!-- ================================================================= -->
+    <!-- TEST-ONLY unmapped SUSPENDED beam for acceptance scenario H.      -->
+    <!--                                                                   -->
+    <!-- A ceiling-hung duct across the x = 11 corridor: solid from        -->
+    <!-- z = 0.98 m up to z = 1.60 m, with genuinely open air beneath it.   -->
+    <!-- This is a physically sensible object, not a floating slab.        -->
+    <!--                                                                   -->
+    <!-- Why it is flown from LAYER 2 (1.00 m) and not layer 1:            -->
+    <!--   The horizontal ranger cone is 27 deg, so at the required 0.60 m  -->
+    <!--   forward clearance it spreads 0.144 m vertically, and the sensor  -->
+    <!--   sits 0.0374 m above base_footprint.  A candidate altitude z      -->
+    <!--   therefore still SEES anything below z + 0.181 m.  From layer 1   -->
+    <!--   (0.50 m) the only reachable downward candidate is 0.40 m - 0.30  -->
+    <!--   m is refused by the floor-clearance gate - which is a 0.10 m     -->
+    <!--   excursion, far less than the 0.181 m the cone spreads.  No beam  -->
+    <!--   can both block at 0.50 m and read clear at 0.40 m, so a below-   -->
+    <!--   pass is geometrically impossible from layer 1.  From layer 2 the -->
+    <!--   drone can reach 0.80 m, and 0.80 + 0.181 = 0.981 m < 0.98 m top  -->
+    <!--   of the open gap, so the pass exists with margin.                 -->
+    <!--                                                                   -->
+    <!--   * blocks at layer 2 (1.00 m): beam bottom 0.98 m is inside the   -->
+    <!--     ranger's view at close range, so the guard stops the drone.    -->
+    <!--   * clear at the 0.80 m candidate, with 0.98 - 0.83 = 0.15 m of    -->
+    <!--     real airframe clearance under the beam.                        -->
+    <!--   * invisible to layer 1 (0.50 m): the cone reaches only 0.681 m.  -->
+    <!--   * descending 1.00 -> 0.80 m needs 0.20 + 0.35 = 0.55 m of floor  -->
+    <!--     clearance; about 0.96 m is available, so the gate passes       -->
+    <!--     honestly rather than by relaxing the margin.                   -->
+    <!-- ================================================================= -->
+    <model name="bypass_test_suspended_beam">
+      <static>true</static>
+      <pose>11.0 0.0 1.29 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.2 25.0 0.62</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.2 25.0 0.62</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.15 0.45 0.85 1</ambient>
+            <diffuse>0.15 0.45 0.85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

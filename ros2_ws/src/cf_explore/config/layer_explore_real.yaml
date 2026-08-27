@@ -1,0 +1,84 @@
+# Conservative real-hardware overrides for the existing layer_explore node.
+# Every motion value is an unvalidated engineering starting point.
+layer_explore:
+  ros__parameters:
+    use_sim_time: false
+    robot_name: "__ROBOT_NAME__"
+    map_frame: map
+    stable_frame: "__ROBOT_NAME__/odom"
+    body_frame: "__ROBOT_NAME__"
+
+    # [POTREBNA PROVJERA] Validate with a restrained, supervised first flight.
+    cruise_speed_mps: 0.20
+    climb_speed_mps: 0.10
+
+    # First-flight mission bound: exactly one map layer, at 0.40 m.
+    # layers_below_ceiling() returns max(1, floor((room - clearance)/spacing))
+    # altitudes, so a clearance larger than any real room leaves precisely the
+    # one mandatory layer at layer_spacing_m.  The algorithm is unchanged: it
+    # explores that layer normally, then takes its own "all layers complete"
+    # branch to LAND.  Raise the clearance back to ~0.30 for multi-layer runs.
+    layer_spacing_m: 0.40
+    layer_ceiling_clearance_m: 10.0
+
+    # The clearance trick above is NOT sufficient on its own.  PROBE's third
+    # branch (no valid overhead geometry at all) bypasses layers_below_ceiling
+    # entirely and installs DEFAULT_N_LAYERS=3 altitudes, ignoring the
+    # clearance; its intended corrector, _finalize_layer_heights(), is dead
+    # because _verified_ceiling_z is never assigned in layer_explore.py.
+    # max_layers is the hard bound that actually holds on every branch.
+    # 0 means unbounded and is the default, so simulation is unchanged.
+    max_layers: 1
+
+    # Bounded first-flight scope.  SCAN completes in ~8 s and SELECT/NAVIGATE
+    # follow within one 20 Hz tick, which no operator can react to, so the
+    # first supervised flight is bounded in the algorithm: the mission hovers
+    # after SCAN and waits for the operator L key instead of translating.
+    # Clear this (empty string, the default) to allow normal exploration.
+    halt_after_state: "SCAN"
+
+    # Real-hardware operator gate.  layer_explore holds motionless, publishing
+    # an explicit zero command, until real_operator_control publishes True
+    # here in response to the operator's G key.  Empty in simulation.
+    start_gate_topic: "/real_operator/autonomy_authorized"
+
+    # Measured in the actual flight room on 2026-08-22, replacing the 2.475 m
+    # default that was derived from the Gazebo world ceiling.  Three static
+    # hand measurements of (odom z + up ranger) gave 2.74 / 2.82 / 2.85 m; the
+    # up ranger sees the ceiling comfortably inside its 3.49 m limit, so this
+    # fallback should never actually be reached.  Used only when the plane
+    # estimator cannot resolve a real surface.
+    fallback_floor_height_m: 0.0
+    fallback_ceiling_height_m: 2.80
+
+    # 0.40 m keeps the airframe clear of ground effect and inside the Flow
+    # deck's reliable band, unlike the 0.20 m first guess.
+    ascend_min_headroom_m: 0.30
+    takeoff_min_height_m: 0.20
+    takeoff_overshoot_m: 0.03
+
+    # The real control adapter clamps yaw to max_yaw_rate_radps (0.30).
+    # layer_explore sizes the SCAN timeout as angle/scan_yaw_rate, so a
+    # commanded rate above that cap would be silently clamped and the sweep
+    # would time out before completing.  Stay under the cap instead of
+    # raising it: slower yaw also keeps the Flow deck's estimate cleaner.
+    scan_yaw_rate: 0.25
+
+    # Real Multi-ranger streams, not Gazebo's synthetic full scan.
+    use_gazebo_full_scan: false
+    freshness_timeout_sec: 0.50
+    maximum_sensor_age_sec: 0.35
+    # NOTE: layer_explore.py applies max(0.5, value) to this parameter, so any
+    # value below 0.5 is inert.  Recorded at the real floor to stop the file
+    # implying a tighter bound than the code enforces.
+    future_timestamp_tolerance_sec: 0.50
+    future_observation_queue_timeout_sec: 0.50
+    geometry_update_rate_hz: 10.0
+    tf_timeout_sec: 0.05
+    sensor_fov_deg: 27.0
+    maximum_return_epsilon_m: 0.01
+
+    # Keep recovery motion slower than the already conservative cruise speed.
+    close_obstacle_escape_speed_mps: 0.05
+    close_obstacle_escape_acceleration_mps2: 0.10
+    close_obstacle_recovery_attempts: 1
