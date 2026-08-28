@@ -35,12 +35,20 @@ def test_real_parameter_files_override_shared_platform_values():
         # requires them; a focused shared-core run may precede that integration.
         return
 
-    layer_text = layer_config.read_text()
-    auto_text = auto_config.read_text()
+    import yaml
+
+    layer_params = yaml.safe_load(
+        layer_config.read_text())['layer_explore']['ros__parameters']
+    auto_params = yaml.safe_load(
+        auto_config.read_text())['cf_auto']['ros__parameters']
     for key in (
             'cruise_speed_mps', 'climb_speed_mps', 'layer_spacing_m',
-            'layer_ceiling_clearance_m', 'ascend_min_headroom_m',
-            'takeoff_min_height_m', 'takeoff_overshoot_m', 'body_frame'):
-        assert key in layer_text
-    assert 'takeoff_min_height_m' in auto_text
-    assert 'takeoff_overshoot_m' in auto_text
+            'ascend_min_headroom_m', 'takeoff_min_height_m',
+            'takeoff_overshoot_m', 'body_frame'):
+        assert key in layer_params
+    # layer_ceiling_clearance_m is deliberately NOT overridden any more: a
+    # clearance larger than the room was how the staged first flight forced a
+    # single layer.  The real profile now takes the shared default.
+    assert 'layer_ceiling_clearance_m' not in layer_params
+    assert 'takeoff_min_height_m' in auto_params
+    assert 'takeoff_overshoot_m' in auto_params

@@ -137,7 +137,7 @@ First build (builds the vendored packages too):
 ```bash
 cd ~/crazyflie_autonomous_exploration_mapping_navigation/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF
 source install/setup.bash
 ```
 
@@ -251,6 +251,16 @@ Multi-layer routing is **discrete**: `layer_route.plan_3d_route` searches
 `TRANSITION` legs. A transition cell must be free on **both** adjacent
 inflated grids. This is not free-space 3D trajectory planning.
 
+**Where a hop happens is derived, not configured.** The static planner finds
+the transition cell in the saved maps, so a mission needs no hand-measured
+coordinates — in particular a real mission never requires them. The
+`transition_*` parameters are a **fallback** table, read only where the static
+planner is unavailable (multi-layer routing off, or a layer with no cached
+grid). While the static planner owns transitions, that table is unused, and
+preflight validation skips it rather than letting an unused placeholder abort
+a valid mission; the moment the fallback can actually be reached, its strict
+known-free and inflation checks and its missing-hop abort both apply again.
+
 How a `TRANSITION` leg is *flown* is a separate, execution-level decision:
 
 1. **Diagonal (default).** If the next leg is a `MOVE` on the target layer,
@@ -329,32 +339,103 @@ real workflow:
 
 ```bash
 ros2 launch cf_explore layer_explore_real.launch.py --show-args
+
+ros2 launch cf_explore layer_explore_real.launch.py \
+  robot_name:=crazyflie \
+  radio_uri:=radio://0/80/2M/E7E7E7E7E7 \
+  hardware_identity_confirmed:=true \
+  autonomy_enabled:=true \
+  dry_run:=false \
+  extrinsics_verified:=true \
+  front_xyz:=0,0,0.02 \
+  right_xyz:=0,0,0.02 \
+  back_xyz:=0,0,0.02 \
+  left_xyz:=0,0,0.02 \
+  up_xyz:=0,0,0.02 \
+  down_xyz:=0,0,0.02 \
+  front_rpy:=0,0,0 \
+  right_rpy:=0,0,-1.57079632679 \
+  back_rpy:=0,0,3.14159265359 \
+  left_rpy:=0,0,1.57079632679 \
+  up_rpy:=0,-1.57079632679,0 \
+  down_rpy:=0,1.57079632679,0
 ```
 
 ```bash
 ros2 launch cf_explore cf_auto_real.launch.py --show-args
+
+ros2 launch cf_explore cf_auto_real.launch.py \
+  robot_name:=crazyflie \
+  radio_uri:=radio://0/80/2M/E7E7E7E7E7 \
+  hardware_identity_confirmed:=true \
+  autonomy_enabled:=true \
+  dry_run:=false \
+  extrinsics_verified:=true \
+  mission_waypoints_xyz:="x1,y1,z1,x2,y2,z2" \
+  front_xyz:=0,0,0.02 \
+  right_xyz:=0,0,0.02 \
+  back_xyz:=0,0,0.02 \
+  left_xyz:=0,0,0.02 \
+  up_xyz:=0,0,0.02 \
+  down_xyz:=0,0,0.02 \
+  front_rpy:=0,0,0 \
+  right_rpy:=0,0,-1.57079632679 \
+  back_rpy:=0,0,3.14159265359 \
+  left_rpy:=0,0,1.57079632679 \
+  up_rpy:=0,-1.57079632679,0 \
+  down_rpy:=0,1.57079632679,0
 ```
 
-Physical testing used `layer_explore` only, on a single layer, in **bounded
-supervised runs**: the `halt_after_state` / `halt_after_layer` parameters stop
-the mission at a chosen state so an experiment ends before the operator has to
-react. Flight logs are kept locally under `ros2_ws/log/real_flight_*` and are
-not committed.
+### Mission scope of the real configuration
 
-Demonstrated in the air, with logged evidence: radio link and telemetry, the
-Multi-Ranger and TF pipeline, the operator keyboard (arm / authorize / land /
-emergency), takeoff, the room-height probe, the 120° yaw scan, live occupancy
-updates, the bounded validation hold, and a controlled landing followed by
-disarm — i.e. the chain `TAKEOFF → PROBE → SCAN → VALIDATION_HOLD → land →
-disarmed`. Later supervised runs also exercised frontier selection, A\* routing
-and short navigation legs; treat any claim beyond the chain above as
-provisional unless you have the corresponding log.
+The shipped real profiles impose **no artificial mission bound**. Once the
+operator has armed with `Left Alt` and authorized autonomy with `G`:
+
+- `layer_explore_real` runs the complete exploration mission — `TAKEOFF →
+  PROBE → SCAN → SELECT → NAVIGATE →` repeat `→` layer complete `→` save `→`
+  next layer `→ LAND → DONE` — and stops on its own completion criteria. The
+  layer count is derived in flight from the measured floor and ceiling; it is
+  not written down anywhere.
+- `cf_auto_real` runs the complete waypoint mission — localization, takeoff,
+  planning, path following, layer transitions, map switching, relocalization,
+  every configured waypoint, then landing — with multi-layer routing, the
+  vertical bypass and the generic replan budget all active.
+
+`max_layers`, `halt_after_state` and `halt_after_layer` remain available as
+generic optional debugging bounds, but **none of them is set** in
+[`layer_explore_real.yaml`](ros2_ws/src/cf_explore/config/layer_explore_real.yaml)
+or [`cf_auto_real.yaml`](ros2_ws/src/cf_explore/config/cf_auto_real.yaml).
+Only the internal fail-safes remain: stale-data rejection, the motion permit,
+the collision guard, controlled landing and post-landing disarm. None of them
+needs operator interaction during a healthy flight.
+
+### What has actually been flown
+
+**Software capability is not flight evidence.** The physical testing described
+below predates the configuration above and was deliberately bounded; nothing
+here has been re-flown since the mission bounds were removed.
+
+Earlier physical testing used `layer_explore` only, on a single layer, in
+**bounded supervised runs**: that configuration set `halt_after_state` so an
+experiment ended at a chosen state before the operator had to react. Flight
+logs are kept locally under `ros2_ws/log/real_flight_*` and are not committed.
+
+Demonstrated in the air at that time, with logged evidence: radio link and
+telemetry, the Multi-Ranger and TF pipeline, the operator keyboard (arm /
+authorize / land / emergency), takeoff, the room-height probe, the 120° yaw
+scan, live occupancy updates, the bounded validation hold, and a controlled
+landing followed by disarm — i.e. the chain `TAKEOFF → PROBE → SCAN →
+VALIDATION_HOLD → land → disarmed`. Later supervised runs also exercised
+frontier selection, A\* routing and short navigation legs; treat any claim
+beyond the chain above as provisional unless you have the corresponding log.
 
 **Never executed on the physical aircraft:** completing a layer, saving a real
 map (`ros2_ws/map_real/` is empty), the climb to a second layer, multi-layer
 real mapping, and the whole of `cf_auto` — real navigation, real map switching
-and real layer transitions, diagonal or vertical, are implemented but
-**unvalidated on hardware**.
+and real layer transitions, diagonal or vertical. All of these are implemented
+and, since the mission bounds were removed, also **enabled** in the real
+configuration — but they remain **unvalidated on hardware**. Enabled is not
+flown.
 
 ## Known limitations
 
@@ -382,8 +463,9 @@ and real layer transitions, diagonal or vertical, are implemented but
 - **Physical coverage is far narrower than simulation coverage** — see
   [Real Crazyflie](#real-crazyflie).
 - Simulation transition points in `cf_auto.yaml` are hand-measured for the
-  bundled world; a hop naming a layer the map directory does not have is
-  dropped at launch.
+  bundled world, but they are only the fallback table (see
+  [Layer transitions](#layer-transitions)); a hop naming a layer the map
+  directory does not have is dropped at launch.
 
 ## License and author
 

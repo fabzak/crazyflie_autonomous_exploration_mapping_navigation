@@ -1356,23 +1356,43 @@ class CfAuto(Node):
                     f'waypoint {index} ({x:.2f}, {y:.2f}) -> cell {cell} is '
                     f'not known free (occupied or unknown)')
 
+        # The configured transition table is the FALLBACK mechanism, and
+        # _plan_target consults it only where _static_route returned None.
+        # _static_route can only do that for a routing reason when multi-layer
+        # routing is off or some layer has no cached grid (its pose guard
+        # cannot fire - _st_plan returns before planning without a pose).  So
+        # with the static planner active over a complete cache, every hop XY
+        # comes from plan_3d_route over the saved grids and the configured
+        # points are unreachable configuration; requiring them to be free
+        # would abort a valid mission over a typed placeholder.
+        #
+        # This never loosens a check that can matter.  A RouteError clears
+        # multilayer_routing, and _validate_waypoints runs again on every
+        # /map and after every map switch, so the strict checks below come
+        # back the moment the fallback becomes reachable - and _plan_target
+        # still aborts outright when the hop it then needs is not configured.
+        static_owns_transitions = (
+            self.multilayer_routing
+            and len(self._layer_grids) == len(self.layer_ids))
+
         # Transitions touching the active layer must be free on this map.
         checked = []
-        for (a, b), point in sorted(self.transitions.items()):
-            if self.layer_index not in (a, b):
-                continue
-            cell = self.grid.to_cell(*point)
-            label = f'{self.layer_ids[a]}->{self.layer_ids[b]}'
-            if not (self.grid.inside(cell) and self.grid.is_raw_free(cell)):
-                problems.append(
-                    f'transition {label} point {point} is not known free on '
-                    f'the layer-{self.layer_id} map')
-            elif not self.grid.is_free(cell):
-                problems.append(
-                    f'transition {label} point {point} is inside the inflation '
-                    f'margin on the layer-{self.layer_id} map')
-            else:
-                checked.append(f'{label}@{point}')
+        if not static_owns_transitions:
+            for (a, b), point in sorted(self.transitions.items()):
+                if self.layer_index not in (a, b):
+                    continue
+                cell = self.grid.to_cell(*point)
+                label = f'{self.layer_ids[a]}->{self.layer_ids[b]}'
+                if not (self.grid.inside(cell) and self.grid.is_raw_free(cell)):
+                    problems.append(
+                        f'transition {label} point {point} is not known free '
+                        f'on the layer-{self.layer_id} map')
+                elif not self.grid.is_free(cell):
+                    problems.append(
+                        f'transition {label} point {point} is inside the '
+                        f'inflation margin on the layer-{self.layer_id} map')
+                else:
+                    checked.append(f'{label}@{point}')
 
         if problems:
             for problem in problems:
@@ -1381,11 +1401,17 @@ class CfAuto(Node):
             return False
         active = sum(1 for _, _, z in self.waypoints
                      if self._layer_of(z) == self.layer_index)
+        if static_owns_transitions:
+            note = ('layer changes come from the saved layer grids; the '
+                    'configured fallback points are unused and unchecked')
+        elif checked:
+            note = f'transition points free: {", ".join(checked)}'
+        else:
+            note = 'transition points free: none on this layer'
         self.get_logger().info(
             f'Mission validated on layer {self.layer_id} (z={self.layer_z:.2f} m): '
             f'{active} of {len(self.waypoints)} waypoints belong to this layer '
-            f'and are known free; transition points free: '
-            f'{", ".join(checked) if checked else "none on this layer"}.')
+            f'and are known free; {note}.')
         return True
 
     # -- visualization ---------------------------------------------------------

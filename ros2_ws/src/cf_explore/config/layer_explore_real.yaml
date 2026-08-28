@@ -8,34 +8,24 @@ layer_explore:
     stable_frame: "__ROBOT_NAME__/odom"
     body_frame: "__ROBOT_NAME__"
 
-    # [POTREBNA PROVJERA] Validate with a restrained, supervised first flight.
+    # [POTREBNA PROVJERA] Conservative real motion envelope, unvalidated.
     cruise_speed_mps: 0.20
     climb_speed_mps: 0.10
 
-    # First-flight mission bound: exactly one map layer, at 0.40 m.
-    # layers_below_ceiling() returns max(1, floor((room - clearance)/spacing))
-    # altitudes, so a clearance larger than any real room leaves precisely the
-    # one mandatory layer at layer_spacing_m.  The algorithm is unchanged: it
-    # explores that layer normally, then takes its own "all layers complete"
-    # branch to LAND.  Raise the clearance back to ~0.30 for multi-layer runs.
+    # Layer altitudes are measured in flight, never listed here: PROBE feeds
+    # the observed floor/ceiling to layers_below_ceiling(), which returns
+    # floor((room - clearance)/spacing) altitudes at multiples of the spacing.
+    # Only the spacing is overridden - tighter than the 0.50 m default to suit
+    # a low indoor room.  The layer COUNT is whatever the room supports, and
+    # layer_ceiling_clearance_m keeps its 0.50 m default: no real-only
+    # override, so a real run derives its stack exactly as simulation does.
     layer_spacing_m: 0.40
-    layer_ceiling_clearance_m: 10.0
 
-    # The clearance trick above is NOT sufficient on its own.  PROBE's third
-    # branch (no valid overhead geometry at all) bypasses layers_below_ceiling
-    # entirely and installs DEFAULT_N_LAYERS=3 altitudes, ignoring the
-    # clearance; its intended corrector, _finalize_layer_heights(), is dead
-    # because _verified_ceiling_z is never assigned in layer_explore.py.
-    # max_layers is the hard bound that actually holds on every branch.
-    # 0 means unbounded and is the default, so simulation is unchanged.
-    max_layers: 1
-
-    # Bounded first-flight scope.  SCAN completes in ~8 s and SELECT/NAVIGATE
-    # follow within one 20 Hz tick, which no operator can react to, so the
-    # first supervised flight is bounded in the algorithm: the mission hovers
-    # after SCAN and waits for the operator L key instead of translating.
-    # Clear this (empty string, the default) to allow normal exploration.
-    halt_after_state: "SCAN"
+    # max_layers and halt_after_state are deliberately absent.  Both remain
+    # available as generic optional debugging bounds (defaults 0 = unbounded
+    # and "" = disabled), but the real profile imposes neither, so exploration
+    # runs TAKEOFF -> PROBE -> SCAN -> SELECT -> NAVIGATE -> save -> next layer
+    # -> LAND -> DONE on its own completion criteria.
 
     # Real-hardware operator gate.  layer_explore holds motionless, publishing
     # an explicit zero command, until real_operator_control publishes True
