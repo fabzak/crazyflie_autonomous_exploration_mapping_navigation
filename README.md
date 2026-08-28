@@ -235,7 +235,7 @@ Configuration lives in
 | File | Used by |
 |---|---|
 | `cf_auto.yaml` | `cf_auto`, `map_server`, `amcl`, both scan mergers, visualizer |
-| `cf_auto.rviz` | the navigation RViz view |
+| `cf_auto.rviz` | the navigation RViz view — shared by `cf_auto` **and** `cf_auto_real` |
 | `layer_explore_real.yaml`, `layer_explore_real.rviz` | real mapping |
 | `cf_auto_real.yaml` | real navigation |
 | `real_safety.yaml`, `crazyflies_real.yaml` | shared by both real workflows |
@@ -385,6 +385,27 @@ ros2 launch cf_explore cf_auto_real.launch.py \
   up_rpy:=0,-1.57079632679,0 \
   down_rpy:=0,1.57079632679,0
 ```
+
+That single command brings up the whole real navigation stack: the hardware
+boundary from `real_base.launch.py` (sensor adapter, safety watchdog, control
+adapter, operator keyboard, body frame), `nav2_map_server`, `nav2_amcl` and
+its lifecycle manager, both scan mergers, the planar frame, `cf_auto`, the
+layer visualizer and **RViz2** — no second terminal.
+
+`cf_auto_real` uses the *same* [`config/cf_auto.rviz`](ros2_ws/src/cf_explore/config/cf_auto.rviz)
+view as the simulation, because every display in it (`/map`, `/scan`,
+`/cf_auto/path`, `/cf_auto/waypoints`, `/layer_map_markers`, `/amcl_pose`) is
+published identically by the real stack and its fixed frame is `map` either
+way. As in simulation, **the mission does not start on its own**: `cf_auto`
+holds in `WAIT_FOR_INITIAL_POSE` until it has a `/map`, an `/initialpose` and
+a valid `map → base` transform, so click **"2D Pose Estimate"** in RViz and
+drag at the aircraft's actual starting pose and heading.
+
+RViz is a viewer, not an authorization: it opens before the aircraft is armed,
+it publishes no command and owns no safety state, and arming, autonomy, landing
+and the emergency cut remain `Left Alt`, `G`, `L` and `SPACE` on the operator
+keyboard. Add `rviz:=False` for an explicit headless run, and
+`layer_markers:=False` to omit the saved-layer markers.
 
 ### Mission scope of the real configuration
 

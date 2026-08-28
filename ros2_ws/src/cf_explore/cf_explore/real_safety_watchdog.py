@@ -51,6 +51,26 @@ RANGE_SIGNALS = ('front', 'right', 'back', 'left', 'up', 'down')
 #: While IS_FLYING is set this is still latched, which is what protects an
 #: airborne vehicle that loses CAN_FLY.
 GROUNDED_RECOVERABLE_BLOCKERS = ('supervisor:cannot_fly',)
+#: Command-stream blockers that are normal before a mission starts and must
+#: not latch while the aircraft physically cannot be moving.  Between launch
+#: and the operator's G there is no continuous setpoint to expect: cf_auto
+#: publishes its zero-command heartbeat from a single-threaded executor, so a
+#: long map/AMCL callback alone can outlast command_timeout_sec.  Observed
+#: 2026-08-28 on hardware: the permit went healthy, then a pre-mission gap
+#: latched `stale:command:receive_time` before takeoff and the whole launch
+#: was unusable.
+#:
+#: These are recoverable ONLY while the supervisor reports neither IS_ARMED
+#: nor IS_FLYING - see _blocker_is_recoverable.  Disarmed and grounded, the
+#: motors cannot spin, so a missing setpoint cannot cause motion.  From the
+#: instant the operator arms, command loss latches again exactly as before,
+#: which closes the takeoff window: IS_ARMED is set by the operator's Left Alt
+#: BEFORE any climb, so there is no interval in which the aircraft could be
+#: leaving the ground while a command gap is still treated as recoverable.
+GROUNDED_RECOVERABLE_COMMAND_BLOCKERS = (
+    'missing:command',
+    'stale:command:receive_time',
+)
 HORIZONTAL_SIGNALS = ('front', 'right', 'back', 'left')
 VERTICAL_SIGNALS = ('up', 'down')
 
@@ -58,6 +78,11 @@ VERTICAL_SIGNALS = ('up', 'down')
 # evaluator can be used without constructing ROS messages.
 SUPERVISOR_CAN_FLY = 8
 SUPERVISOR_IS_FLYING = 16
+#: crazyflie_interfaces/msg/Status SUPERVISOR_INFO_IS_ARMED.  Motors cannot
+#: spin while this is clear, and only the operator's Left Alt can set it -
+#: autonomy may never arm - so it is the earliest trustworthy "this aircraft
+#: could move now" signal, strictly earlier than IS_FLYING.
+SUPERVISOR_IS_ARMED = 2
 SUPERVISOR_IS_TUMBLED = 32
 SUPERVISOR_IS_LOCKED = 64
 PM_STATE_BATTERY = 0
@@ -193,6 +218,7 @@ class SafetyEvaluator:
         self._healthy_once = False
         self._latched_reason: Optional[str] = None
         self._is_flying = False
+        self._is_armed = False
         self._down_lost_since: Optional[float] = None
 
     @property
@@ -226,6 +252,7 @@ class SafetyEvaluator:
         hard_fault = self._status_hard_fault(telemetry)
         blocker = None if hard_fault else self._status_blocker(telemetry)
         self._is_flying = bool(telemetry.supervisor_info & SUPERVISOR_IS_FLYING)
+        self._is_armed = bool(telemetry.supervisor_info & SUPERVISOR_IS_ARMED)
         if not self._is_flying:
             # Grounded: a near-zero or absent floor reading is expected.
             self._down_lost_since = None
@@ -284,6 +311,28 @@ class SafetyEvaluator:
                 > self.config.max_link_latency_ms):
             return 'radio:latency_above_configured_maximum'
         return None
+
+    def _blocker_is_recoverable(self, blocker: str) -> bool:
+        """May this blocker clear again instead of latching a fault?
+
+        Recoverability is decided per blocker and only from firmware
+        supervisor state, never from timing.  Every blocker in an evaluation
+        must be recoverable for the evaluation to avoid the latch, so a single
+        genuinely unsafe input still latches alongside a benign one.
+
+        A stale or absent command is normal before a mission starts, but only
+        while the aircraft cannot move: grounded AND disarmed.  Requiring both
+        bits clear is deliberate belt-and-braces - IS_ARMED alone already
+        precedes any climb, and IS_FLYING alone would leave the arm-to-liftoff
+        window recoverable.  Losing telemetry does not silently widen this:
+        `stale:status:*` and `missing:status` are not recoverable, so if the
+        flight state cannot be trusted the evaluation latches as before.
+        """
+        if blocker in GROUNDED_RECOVERABLE_BLOCKERS:
+            return not self._is_flying
+        if blocker in GROUNDED_RECOVERABLE_COMMAND_BLOCKERS:
+            return not self._is_flying and not self._is_armed
+        return False
 
     def _latch(self, reason: str) -> SafetyDecision:
         if self._latched_reason is None:
@@ -344,10 +393,8 @@ class SafetyEvaluator:
 
         if blockers:
             reason = blockers[0]
-            recoverable = (
-                not self._is_flying
-                and all(blocker in GROUNDED_RECOVERABLE_BLOCKERS
-                        for blocker in blockers))
+            recoverable = all(self._blocker_is_recoverable(blocker)
+                              for blocker in blockers)
             if self._healthy_once and not recoverable:
                 return self._latch(reason)
             return SafetyDecision(False, False, f'waiting_for:{reason}')

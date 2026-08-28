@@ -13,8 +13,8 @@ import tempfile
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            OpaqueFunction)
+from launch.actions import (DeclareLaunchArgument, GroupAction,
+                            IncludeLaunchDescription, OpaqueFunction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -285,7 +285,26 @@ def generate_launch_description():
             description=(
                 'Required comma-separated real mission x,y,z triples; the '
                 'params-file placeholder is always rejected.')),
-        DeclareLaunchArgument('layer_markers', default_value='false'),
+        # cf_auto cannot leave WAIT_FOR_INITIAL_POSE without an /initialpose,
+        # and RViz's "2D Pose Estimate" is how an operator supplies one - so
+        # the real workflow needs the same default-on viewer simulation has.
+        DeclareLaunchArgument(
+            'rviz', default_value='true',
+            description='Open RViz with the launch.  Normal interactive real '
+                        'operation; set false for headless/debug runs.'),
+        DeclareLaunchArgument(
+            'rviz_config', default_value=os.path.join(
+                share, 'config', 'cf_auto.rviz'),
+            description='The same navigation view simulation uses: its fixed '
+                        'frame is map and every display topic is published '
+                        'identically by the real stack.'),
+        # The layer visualiser is passive - one MarkerArray publisher and one
+        # Int32 subscription, no command, service or safety state - and it
+        # feeds the "Saved Layers" display that the RViz config above always
+        # contains.  Defaulting it off would ship a permanently empty panel,
+        # so the real profile matches cf_auto.launch.py here.  It stays inside
+        # _navigation_actions, so it still cannot start before autonomy.
+        DeclareLaunchArgument('layer_markers', default_value='true'),
     ]
     for sensor in SENSOR_NAMES:
         declarations.extend([
@@ -297,5 +316,40 @@ def generate_launch_description():
             FindPackageShare('cf_explore'), 'launch', 'real_base.launch.py'])),
         launch_arguments=_base_launch_arguments().items(),
     )
+    # IncludeLaunchDescription does NOT scope: launch/actions/
+    # include_launch_description.py returns
+    # ``[*set_launch_configuration_actions, launch_description]`` with no
+    # Push/PopLaunchConfigurations around it, so every SetLaunchConfiguration
+    # performed anywhere below an include lands in THIS context and outlives
+    # the include.  real_base passes ``'rviz': 'False'`` to the official
+    # Crazyswarm2 launch to keep that stack's own viewer off; unscoped, that
+    # value overwrote the ``rviz`` argument declared above and the IfCondition
+    # below - evaluated after the include - silently read False, so RViz never
+    # started even though --show-args still reported the true default.
+    #
+    # GroupAction(scoped=True, forwarding=True) wraps the include in
+    # PushLaunchConfigurations/PopLaunchConfigurations: real_base still sees
+    # every argument forwarded from here, Crazyswarm2 still sees rviz=False
+    # inside the scope, and the pop restores this launch's own rviz before the
+    # node below is evaluated.  Ordering is not the fix - moving RViz earlier
+    # would only hide the leak from this one reader.
+    scoped_base = GroupAction(actions=[base], scoped=True, forwarding=True)
+    # RViz is part of the application, not part of the aircraft - the same
+    # placement layer_explore_real.launch.py uses.  It is a plain Node at the
+    # top level, deliberately NOT inside _navigation_actions, which returns []
+    # while autonomy_enabled is false: the operator needs the view up before
+    # Left Alt and before G, and needs "2D Pose Estimate" to publish the
+    # /initialpose that releases WAIT_FOR_INITIAL_POSE.  It only subscribes -
+    # it publishes no command, calls no service and owns no safety state - and
+    # its lifetime is the launch's, so L, SPACE, landing and disarm leave it
+    # running and only launch shutdown closes it.
+    rviz = Node(
+        package='rviz2', executable='rviz2', name='rviz2',
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{'use_sim_time': False}],
+        condition=IfCondition(LaunchConfiguration('rviz')),
+        output='log',
+    )
     return LaunchDescription(
-        declarations + [base, OpaqueFunction(function=_navigation_actions)])
+        declarations
+        + [scoped_base, rviz, OpaqueFunction(function=_navigation_actions)])
