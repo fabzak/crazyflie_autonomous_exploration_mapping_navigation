@@ -169,9 +169,7 @@ height, then repeats `SCAN → SELECT → NAVIGATE` until no reachable frontier
 remains, saves that layer, climbs to the next one, and finally lands.
 
 > **`map_save_dir` matters.** Left at its default the run writes into
-> [`ros2_ws/map/`](ros2_ws/map) and **overwrites the saved navigation maps**,
-> which have been hand-edited since they were produced. Point it somewhere
-> else unless you intend to replace them.
+> [`ros2_ws/map/`](ros2_ws/map) and **overwrites the saved navigation maps**
 
 Useful arguments: `rviz:=False`, `scan_rotation_angle_deg:=120.0`,
 `scan_yaw_rate:=0.40`, `cruise_speed_mps:=0.80`.

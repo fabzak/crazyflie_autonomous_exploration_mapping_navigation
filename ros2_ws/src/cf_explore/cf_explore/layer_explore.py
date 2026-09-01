@@ -331,6 +331,32 @@ OCCUPIED_PIXEL = 0
 # space as free.
 UNKNOWN_SAFE_FREE_THRESH = 0.196
 
+# A cell is occupied once this fraction of the beams that reached it ended on
+# it.  Kept as a ratio of integers so the int32 counters compare exactly:
+# occ * DEN >= total * NUM.  masks(), to_msg() and save_layer() all decide
+# through occupied_counts_mask(), so the live grid and the map it writes cannot
+# disagree - a cell layer_explore refuses to plan through is never saved as
+# free space for cf_auto to fly into.
+OCCUPIED_RATIO_NUM = 3
+OCCUPIED_RATIO_DEN = 10
+#: Human-readable form of the ratio above, for logs and tests.  The decision is
+#: made by occupied_counts_mask(); comparing a float ratio against this instead
+#: would reintroduce the live/saved split it exists to prevent.
+OCCUPIED_RATIO_THRESHOLD = OCCUPIED_RATIO_NUM / OCCUPIED_RATIO_DEN
+
+
+def occupied_counts_mask(occ: np.ndarray, free: np.ndarray) -> np.ndarray:
+    """Occupied cells for a pair of hit/miss counter arrays.
+
+    Never-observed cells (both counters zero) are unknown, not occupied.
+    Widened to int64 first: the counters are int32 and ``occ * DEN`` would wrap
+    negative past ~2.1e8 hits on one cell, turning a solid obstacle free.
+    """
+    occ = occ.astype(np.int64, copy=False)
+    total = occ + free
+    return (total > 0) & (occ * OCCUPIED_RATIO_DEN
+                          >= total * OCCUPIED_RATIO_NUM)
+
 
 def saved_cell_semantics(pixel: int, free_thresh: float,
                          occupied_thresh: float) -> str:
@@ -410,8 +436,8 @@ class GridMap:
 
     def masks(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         total = self.occ + self.free
-        free_mask = (total > 0) & (self.occ * 10 < total * 3)
-        occ_mask = (total > 0) & ~free_mask
+        occ_mask = occupied_counts_mask(self.occ, self.free)
+        free_mask = (total > 0) & ~occ_mask
         unknown_mask = total == 0
         return free_mask, occ_mask, unknown_mask
 
@@ -430,11 +456,9 @@ class GridMap:
         N, res = self.size, self.res
         ox, oy = self.origin
         total = self.occ + self.free
-        occ_prob = np.zeros(total.shape, dtype=np.float32)
-        mask = total > 0
-        occ_prob[mask] = self.occ[mask] / total[mask]
         pixels = np.where(total == 0, UNKNOWN_PIXEL,
-                          np.where(occ_prob >= 0.65, OCCUPIED_PIXEL,
+                          np.where(occupied_counts_mask(self.occ, self.free),
+                                   OCCUPIED_PIXEL,
                                    FREE_PIXEL)).astype(np.uint8)
         pgm_path = os.path.join(save_dir, f"map_layer_{layer}.pgm")
         yaml_path = os.path.join(save_dir, f"map_layer_{layer}.yaml")
@@ -449,6 +473,10 @@ class GridMap:
                 'resolution': float(res),
                 'origin': [float(ox), float(oy), 0.0],
                 'negate': 0,
+                # Pixel-shade threshold Nav2 decodes this trinary PGM with,
+                # not the beam ratio above: it only has to separate shade 1.0
+                # (pixel 0) from unknown's 0.196, so it is independent of
+                # OCCUPIED_RATIO_THRESHOLD and must not be retuned to match it.
                 'occupied_thresh': 0.65,
                 'free_thresh': UNKNOWN_SAFE_FREE_THRESH,
             }, f, default_flow_style=False)
@@ -466,7 +494,8 @@ class GridMap:
         total = self.occ + self.free
         grid = np.full((self.size, self.size), -1, dtype=np.int8)
         mask = total > 0
-        grid[mask] = np.where(self.occ[mask] * 10 >= total[mask] * 3, 100, 0)
+        grid[mask] = np.where(
+            occupied_counts_mask(self.occ, self.free)[mask], 100, 0)
         msg = OccupancyGrid()
         msg.header.stamp = stamp
         msg.header.frame_id = frame
