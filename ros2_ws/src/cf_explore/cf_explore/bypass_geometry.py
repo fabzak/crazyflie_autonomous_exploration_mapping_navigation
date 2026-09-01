@@ -1,30 +1,25 @@
-"""Pure geometry and evidence rules for the live unmapped-obstacle bypass.
+"""Geometry and evidence rules for the live unmapped-obstacle bypass.
 
-No ROS imports.  Everything here is a plain function or a small accumulator so
-that the Gate 4/5 decisions - which altitude to try, whether a direction is
-provably clear, whether the airframe has actually passed the obstacle - can be
-unit-tested without a running node, exactly as ``sensor_geometry`` and
-``layer_route`` are.
+No ROS imports, so which altitude to try, whether a direction is clear and
+whether the airframe has passed can be unit-tested without a node.
 
-Two facts about the Crazyflie's Multi-Ranger drive every rule below:
+Two Multi-Ranger facts drive every rule here:
 
-* The four horizontal cones sit at body yaw 0, +90, 180 and -90 degrees and are
-  27 degrees wide, so the drone senses 108 of 360 degrees.  A bearing outside
-  those four windows is **not sensed at all**, and the merged ``/scan_safety``
-  cannot say so itself: an unsensed bin and a bin that saw nothing both hold
-  ``inf``.  Coverage therefore has to be decided from the mounting geometry,
-  never from the range values.  See :func:`bearing_is_covered`.
-* The drone cannot measure an altitude before it has flown to it.  Absence of a
-  return is weak evidence, so every "clear" decision here needs repeated fresh
-  observations over a dwell, never a single sample.
+* The four horizontal cones sit at body yaw 0, +90, 180 and -90 deg and are
+  27 deg wide, so only 108 of 360 deg is sensed.  The merged ``/scan_safety``
+  cannot say which: an unsensed bin and a bin that saw nothing both hold
+  ``inf``, so coverage comes from the mounting geometry, never from the range
+  values.  See :func:`bearing_is_covered`.
+* An altitude cannot be measured before it is flown to, so a missing return is
+  weak evidence and every "clear" decision needs a dwell, not one sample.
 """
 
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
-# Copied from sensor_geometry.SENSOR_MOUNT_RPY; duplicated as a bare tuple so
-# this module stays import-free and can be reasoned about on its own.
+# Same yaws as sensor_geometry.SENSOR_MOUNT_RPY, duplicated to keep this
+# module import-free.  Update both.
 HORIZONTAL_CONE_YAWS = (0.0, math.pi / 2.0, math.pi, -math.pi / 2.0)
 DEFAULT_CONE_HALF_WIDTH = math.radians(13.5)   # 27 deg full width
 
@@ -38,8 +33,8 @@ def bearing_is_covered(bearing_body: float,
                        half_width: float = DEFAULT_CONE_HALF_WIDTH) -> bool:
     """True when a body-frame bearing falls inside one of the four cones.
 
-    This is the gate that keeps "no return" from being read as "clear" in a
-    direction the drone simply cannot see.
+    The gate that keeps "no return" from being read as "clear" in a direction
+    the drone cannot see.
     """
     return any(abs(wrap_angle(bearing_body - centre)) <= half_width
                for centre in HORIZONTAL_CONE_YAWS)
@@ -47,10 +42,9 @@ def bearing_is_covered(bearing_body: float,
 
 def covered_bearing_error(bearing_body: float,
                           half_width: float = DEFAULT_CONE_HALF_WIDTH) -> float:
-    """Smallest yaw change that would bring ``bearing_body`` into a cone.
+    """Smallest yaw change that puts ``bearing_body`` on the nearest cone edge.
 
-    Zero when the bearing is already covered.  Used to decide how far to turn
-    before a probe, so the intended travel direction is actually sensed.
+    Zero when the bearing is already covered.  Nothing calls this yet.
     """
     best = min((wrap_angle(bearing_body - centre)
                 for centre in HORIZONTAL_CONE_YAWS), key=abs)
@@ -68,11 +62,10 @@ def sector_min_range(ranges: Sequence[float],
                      half_width: float) -> Optional[float]:
     """Closest valid return inside an angular window of a LaserScan.
 
-    ``bearing`` and the scan share one frame.  Returns ``math.inf`` when the
-    window holds no return at all, and ``None`` when the scan is unusable
-    (empty, or a degenerate angular increment) so the caller can fail closed.
-    ``inf`` alone never means "clear" - the caller must also have established
-    coverage via :func:`bearing_is_covered`.
+    ``bearing`` is in the scan's frame.  ``inf`` means the window holds no
+    valid return; ``None`` means the scan is unusable (empty, or a degenerate
+    increment) so the caller can fail closed.  Neither means "clear" without a
+    coverage check.
     """
     if not ranges or angle_increment <= 0.0:
         return None
@@ -94,14 +87,12 @@ def candidate_altitudes(z0: float,
                         max_steps: int,
                         z_min: float,
                         z_max: float) -> List[float]:
-    """Discrete probe altitudes ordered by added path length, nearest first.
+    """Probe altitudes ordered by added vertical distance, nearest first.
 
-    ``z0 + dz, z0 - dz, z0 + 2dz, z0 - 2dz, ...``  Up and down at the same
-    ``k`` cost exactly the same extra vertical distance, so the up-before-down
-    order inside a pair is only a deterministic tie-break, not a preference:
-    there is no rule here that favours climbing.  Candidates outside
-    ``[z_min, z_max]`` are dropped rather than clamped, because clamping would
-    silently offer the same altitude twice.
+    ``z0 + dz, z0 - dz, z0 + 2dz, ...``  Up and down at the same ``k`` cost the
+    same, so the order inside a pair is only a tie-break.  Candidates outside
+    ``[z_min, z_max]`` are dropped rather than clamped, which would otherwise
+    offer the same altitude twice.
     """
     if step <= 0.0 or max_steps <= 0:
         return []
@@ -115,13 +106,12 @@ def candidate_altitudes(z0: float,
 
 @dataclass
 class ClearanceEvidence:
-    """Accumulates repeated fresh observations before calling a direction clear.
+    """Requires repeated fresh observations before calling a direction clear.
 
-    A single ``inf`` from a 27-degree cone is not evidence; a reflective edge,
-    a momentary beam miss or a dropped frame all produce one.  A direction only
-    counts as clear once it has been observed clear ``required_samples`` times
-    **and** has stayed clear for ``required_hold_sec``.  Any observation that is
-    not clear - including a stale one, which arrives as ``None`` - resets both.
+    One ``inf`` from a 27 deg cone proves little - a reflective edge or a
+    dropped frame produces one.  A direction is clear only after
+    ``required_samples`` clear observations spanning ``required_hold_sec``; any
+    non-clear observation, including a stale ``None``, resets both.
     """
 
     required_samples: int
@@ -137,9 +127,8 @@ class ClearanceEvidence:
     def update(self, nearest: Optional[float], now: float) -> bool:
         """Feed one observation; True once the evidence bar is met.
 
-        ``nearest`` is the closest return in the direction of interest, or
-        ``None`` when the sensor is stale or the bearing is not covered.  Both
-        of those are treated as "not clear", never as "clear".
+        ``nearest`` is the closest return in the direction of interest.
+        ``None`` (stale sensor, or bearing not covered) counts as not clear.
         """
         if nearest is None or nearest < self.required_clearance_m:
             self.reset()
@@ -155,21 +144,16 @@ class ClearanceEvidence:
 class CrossingMonitor:
     """Decides when the whole airframe has passed a live obstacle.
 
-    The front cone going clear only proves the beam no longer strikes the
-    obstacle; the drone's own body has not passed anything at that instant.
-    Crossing is therefore complete only when every one of these holds:
-
-    1. along-track displacement covers the obstacle's measured stand-off plus a
-       margin sized for the obstacle depth and the airframe radius;
-    2. a floor displacement is flown regardless, so a bogus near-zero
-       stand-off measurement cannot end the crossing immediately;
-    3. the travel direction has stayed clear continuously, not once; and
-    4. the full 360-degree safety influence zone is clear, which is what
-       actually has to be true before it is safe to return to the original
-       altitude.
+    The front cone going clear only means the beam misses the obstacle; the
+    body has not passed it yet.  Crossing ends only once along-track
+    displacement covers the measured stand-off plus a margin for obstacle
+    depth and airframe radius (floored, so a bogus near-zero stand-off cannot
+    end it immediately), the travel direction has held clear, and the safety
+    influence zone - what the four cones see, not a full 360 deg - has held
+    clear too.
 
     ``obstacle_range_m`` is the stand-off measured toward the travel direction
-    at the moment translation was blocked, at the *original* altitude.
+    when translation was blocked, at the original altitude.
     """
 
     obstacle_range_m: float
@@ -185,9 +169,9 @@ class CrossingMonitor:
     _forward_clear_since: Optional[float] = field(default=None)
     _influence_clear_since: Optional[float] = field(default=None)
     along_track_m: float = 0.0
-    # Diagnostics only - never read by any decision.  Records the first moment
-    # the travel direction went clear, so a run can be checked afterwards for
-    # the thing that actually matters: that the crossing did NOT end there.
+    # Diagnostics only, never read by a decision: when the travel direction
+    # first went clear, so a log can be checked for a crossing that ended
+    # too early.
     front_first_clear_along_m: Optional[float] = field(default=None)
     front_first_clear_time: Optional[float] = field(default=None)
 
@@ -243,15 +227,10 @@ class CrossingMonitor:
 
 def compose_se2(base: Tuple[float, float, float],
                 delta: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    """Apply an odometry-frame displacement to a map-frame pose.
+    """Add a map-axes displacement to a map-frame pose.
 
-    ``base`` is the last trusted map pose (x, y, yaw) and ``delta`` is the
-    movement measured in the odometry frame over the manoeuvre, as
-    ``odom_now - odom_start`` with the translation still expressed in odometry
-    axes.  The two frames differ by a yaw, so the translation has to be rotated
-    by ``base_yaw - odom_start_yaw`` before it is added; that rotation is the
-    caller's job via :func:`odom_delta_in_map`.  This function assumes ``delta``
-    is already expressed in map axes.
+    ``base`` is the last trusted map pose (x, y, yaw).  ``delta`` must already
+    be in map axes - :func:`odom_delta_in_map` does that rotation.
     """
     x, y, yaw = base
     return (x + delta[0], y + delta[1], wrap_angle(yaw + delta[2]))
@@ -262,14 +241,11 @@ def odom_delta_in_map(odom_start: Tuple[float, float, float],
                       map_yaw_at_start: float) -> Tuple[float, float, float]:
     """Odometry displacement re-expressed in map axes.
 
-    ``map -> odom`` is a rigid SE(2) transform, so a displacement measured in
-    odometry differs from the same displacement in the map only by the constant
-    yaw offset ``map_yaw_at_start - odom_yaw_at_start``.  Rotating the odometry
-    translation by that offset is exactly what turns dead reckoning during an
-    off-layer bypass into a map-frame position the drone can be reseeded at.
-
-    Returning the old map pose unchanged after the drone has physically moved
-    would inject a false jump, which is why the reseed must go through here.
+    ``map -> odom`` is a rigid SE(2), so the two frames differ only by the
+    constant yaw offset ``map_yaw_at_start - odom_yaw_at_start``.  Rotating by
+    it turns dead reckoning during an off-layer bypass into a map pose AMCL
+    can be reseeded at - reseeding at the unchanged old pose would inject a
+    false jump.
     """
     dx = odom_now[0] - odom_start[0]
     dy = odom_now[1] - odom_start[1]

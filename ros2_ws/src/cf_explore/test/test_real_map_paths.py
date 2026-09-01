@@ -85,9 +85,8 @@ def test_real_crazyswarm_inventory_is_placeholder_gated():
     assert range_log['frequency'] == 10
     assert range_log['vars'] == EXPECTED_RANGE_ORDER
 
-    # Diagnostic Flow block added after the 2026-08-22 tumble.  It must never
-    # displace or reorder range_raw, whose wire order decides which physical
-    # sensor lands in which LaserScan.
+    # The diagnostic Flow block must not displace or reorder range_raw: its
+    # wire order decides which physical sensor lands in which LaserScan.
     flow_log = logging['custom_topics']['flow_raw']
     assert flow_log['frequency'] == 10
     assert flow_log['vars'] == [

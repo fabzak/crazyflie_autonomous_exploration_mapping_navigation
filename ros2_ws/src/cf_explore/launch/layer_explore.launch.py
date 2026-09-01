@@ -19,7 +19,7 @@ from cf_explore.sensor_geometry import (
 
 
 def _range_sensor_transforms():
-    """Publish sensor mounting TFs exactly as defined by model.sdf."""
+    """Publish sensor mounting TFs, mirroring model.sdf."""
     nodes = [Node(
         package='tf2_ros', executable='static_transform_publisher',
         name='crazyflie_body_tf', output='screen',
@@ -62,6 +62,8 @@ def generate_launch_description():
         )
     )
 
+    # Mapping runs without AMCL, so world and crazyflie/odom are pinned
+    # together here.  cf_auto must not have this: AMCL owns map -> odom there.
     tf_world_to_odom = Node(
         package="tf2_ros",
         executable="static_transform_publisher",

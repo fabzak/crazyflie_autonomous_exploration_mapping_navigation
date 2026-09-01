@@ -105,10 +105,9 @@ def test_ros_yaw_converts_to_degrees_without_flipping_sign(
     """Measured on hardware: positive VelocityWorld.yaw_rate turns CCW.
 
     Props removed, CRTP protocol 8: commanding +20.0 deg/s produced
-    ctrltarget.yaw = +20.00 and drove the firmware's integrated heading
-    target +18.0 deg/s in the stabilizer.yaw frame, which was itself
-    verified CCW-positive by physically rotating the airframe.  A sign flip
-    here would run every SCAN sweep backwards.
+    ctrltarget.yaw = +20.00 and drove the firmware's integrated heading target
+    +18.0 deg/s in the stabilizer.yaw frame, itself verified CCW-positive by
+    rotating the airframe.  A sign flip here runs every SCAN sweep backwards.
     """
     assert ros_yaw_rate_to_cflib(ros_rate) == pytest.approx(cflib_rate)
 
@@ -324,9 +323,8 @@ def test_non_finite_command_faults_without_output():
 
 
 # ── Airborne fault behaviour ────────────────────────────────────────────────
-# A software fault reachable in flight must still produce a controlled
-# landing.  A terminal state that merely stops the setpoint stream would
-# leave the vehicle airborne with no commands at all.
+# An in-flight fault must land, not latch: a terminal state that just stops
+# the setpoint stream leaves the vehicle airborne with no commands.
 
 def test_nonfinite_command_in_flight_lands_instead_of_faulting():
     core = configured_core()
@@ -369,16 +367,15 @@ def test_landing_timeout_retries_before_giving_up():
     assert core.state == FlightState.HL_LAND
     core.service_result('land', True, now + 0.03)
 
-    # No touchdown is ever confirmed: each timeout re-issues the land call.
+    # No touchdown is confirmed, so each timeout re-issues the land call.
     for attempt in range(1, 3):
         core.tick(now + 0.03 + attempt * 1.5)
         assert core.state == FlightState.HL_LAND
         assert core.land_attempts == attempt
         assert core.required_service() == 'land'
 
-    # An airborne vehicle is never abandoned: past the bounded retry budget
-    # the land call keeps being re-issued rather than latching FAULT with the
-    # aircraft still flying.
+    # Past the retry budget the land call is re-issued rather than latching
+    # FAULT with the aircraft still flying.
     core.tick(now + 0.03 + 3 * 1.5 + 1.5)
     assert core.state == FlightState.HL_LAND
     assert core.land_attempts == 3
@@ -441,9 +438,8 @@ def test_out_of_envelope_commands_are_saturated_not_faulted(vx, vy, vz, wz):
 
 # ── operator-authorized arming ────────────────────────────────────────────
 #
-# On real hardware the autonomous algorithm must never arm the aircraft.  The
-# operator arms with Alt; this adapter only verifies that the firmware
-# supervisor already reports ARMED before it will command a takeoff.
+# Autonomy never arms.  The operator arms with Alt; the adapter only checks
+# that the supervisor already reports ARMED before commanding a takeoff.
 
 
 def operator_core(**overrides):
@@ -458,7 +454,7 @@ def authorize(core, now, authorized=True):
 
 
 def test_operator_authorization_defaults_to_off():
-    """Simulation and every existing test keep the previous behaviour."""
+    """Simulation has no operator node, so the gate is off unless configured."""
     assert ControlConfig().require_operator_authorization is False
     core = configured_core()
     assert core.operator_authorized(0.0) is True
@@ -485,14 +481,14 @@ def test_operator_armed_vehicle_skips_arming_and_takes_off():
                | RealControlCore.IS_ARMED)
     core.tick(now)
     assert core.state == FlightState.HL_TAKEOFF
-    # The adapter must never issue an arm request in this mode.
+    # The adapter must not issue an arm request in this mode.
     assert core.required_service() == 'takeoff'
 
 
 def test_missing_authorization_blocks_takeoff_even_when_armed():
     core = operator_core()
     now = 10.0
-    # No authorization heartbeat has ever arrived.
+    # No authorization heartbeat has arrived.
     feed_fresh(core, now, command=(0.0, 0.0, 0.1, 0.0), z=0.0,
                supervisor=RealControlCore.CAN_BE_ARMED
                | RealControlCore.IS_ARMED)
@@ -521,7 +517,7 @@ def test_stale_authorization_lands_an_airborne_vehicle():
         core.tick(now + step)
     assert core.state == FlightState.LOW_LEVEL
 
-    # The heartbeat stops.  Everything else stays perfectly fresh.
+    # The heartbeat stops; everything else stays fresh.
     later = now + 1.0
     core.update_command(0.0, 0.0, 0.0, 0.0, later)
     core.update_permit(True, later)
@@ -590,14 +586,13 @@ def test_touchdown_is_not_confirmed_on_frozen_telemetry():
     assert core.state == FlightState.HL_LAND
 
 
-# ── vertical authority: exactly one altitude controller ──────────────────
+# ── vertical authority: one altitude controller at a time ────────────────
 #
-# The adapter's z_target hold and an autonomy-side layer controller must never
-# both be regulating Z.  Before this contract existed, ownership was decided
-# purely by |vz| > z_command_epsilon, so an autonomy controller sitting exactly
-# on its target -- commanding a legitimate 0.0 -- silently handed Z back, and
-# the adapter re-latched an odom.z that the firmware's downward-ToF fusion had
-# already dragged toward a raised surface.  See CLAUDE.md, *ABSOLUTE LAYER Z*.
+# The adapter's z_target hold and an autonomy layer controller must not both
+# regulate Z.  Ownership is an explicit heartbeat, not |vz| > z_command_epsilon:
+# an autonomy controller sitting on its target commands a legitimate 0.0, and
+# reading that as "no command" re-latches an odom.z the firmware's downward-ToF
+# fusion has already dragged toward a raised surface.
 
 
 def _hold_scenario(**overrides):
@@ -618,7 +613,7 @@ def _step(core, now, vz, z, authority=None):
 
 
 def test_without_authority_an_exact_zero_hands_z_to_the_adapter():
-    """The pre-existing behaviour, unchanged and still the default."""
+    """Without an authority claim the adapter owns Z - the default."""
     core, now = _hold_scenario()
     decision, now = _step(core, now, 0.0, 0.50)
     assert core.z_target == pytest.approx(0.50)
@@ -626,7 +621,7 @@ def test_without_authority_an_exact_zero_hands_z_to_the_adapter():
 
 
 def test_without_authority_a_dragged_estimate_makes_the_adapter_climb():
-    """Exactly the terrain-following mechanism, reproduced at this boundary."""
+    """The terrain-following mechanism, reproduced at this boundary."""
     core, now = _hold_scenario()
     _, now = _step(core, now, 0.0, 0.50)
     decision, now = _step(core, now, 0.0, 0.30)      # ToF drags the estimate
@@ -643,7 +638,7 @@ def test_authority_lets_autonomy_command_an_exact_zero():
 
 
 def test_authority_stops_the_adapter_chasing_a_dragged_estimate():
-    """The whole point: no climb when the estimator is pulled by terrain."""
+    """No climb when the estimator is pulled down by terrain."""
     core, now = _hold_scenario()
     _, now = _step(core, now, 0.0, 0.50, authority=True)
     decision, now = _step(core, now, 0.0, 0.30, authority=True)

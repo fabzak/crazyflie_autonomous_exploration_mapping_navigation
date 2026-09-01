@@ -1,29 +1,20 @@
 """Static multi-layer route planning over the saved layer maps.
 
-``cf_auto`` flies one saved 2D occupancy grid at a time: ``map_server`` serves a
-single layer and AMCL localizes against that layer alone.  Planning, however,
-benefits from seeing the whole stack at once - a mapped obstacle that blocks the
-active layer is often simply absent one layer up or down, and flying over or
-under it can be physically shorter than going around.
+``cf_auto`` flies one saved 2D occupancy grid at a time, but planning benefits
+from seeing the whole stack: an obstacle that blocks the active layer is often
+absent one layer up, and going over it can be shorter than going around.
 
-This module is the planning-only half of that idea.  It never touches
-``map_server``, AMCL or the live ``/map`` topic; it reads the *saved* map files
-into a private cache and searches them.  Everything here is pure: no ``rclpy``,
-no node state, no I/O beyond reading the map files.  Grids are duck-typed on
-``cf_auto.GridMap`` so the existing inflation / occupancy / line-of-sight
-semantics are reused verbatim rather than reimplemented.
+Pure planning - no ``rclpy``, no node state, no I/O beyond reading the map
+files.  Grids are duck-typed on ``cf_auto.GridMap`` so its inflation, occupancy
+and line-of-sight semantics are reused rather than reimplemented.
 
-Two invariants matter more than anything else in this file:
+Two rules hold throughout:
 
-1. **Static only.**  The grids searched here come from the saved map files and
-   must never be the live ``cf_auto.grid`` instance, because
-   ``GridMap.mark_blocked_disc`` mutates that object's inflated layer in place
-   with live-sensed obstacles.  A live obstacle must never become evidence that
-   some *other* saved layer is clear.  See ``load_layer_grids``.
-2. **No artificial layer-change penalty.**  The search cost is exactly the
-   distance the drone physically flies: horizontal metres plus vertical metres.
-   Fewer layer changes is only ever a tie-break between routes of equal length,
-   never a term in the cost.
+1. Static only.  The grids here come from the saved map files, never the live
+   ``cf_auto.grid``, whose inflated layer ``mark_blocked_disc`` mutates in place
+   with live-sensed obstacles.  See ``load_layer_grids``.
+2. No layer-change penalty.  Cost is the distance flown, horizontal plus
+   vertical; fewer layer changes only breaks ties.
 """
 
 import heapq
@@ -40,15 +31,14 @@ Cell = Tuple[int, int]
 
 SQRT2 = math.sqrt(2.0)
 
-# Two route lengths closer than this are "the same length"; only then does the
-# layer-change count break the tie.  Well below one cell (0.05 m), so it can
-# never mask a genuinely shorter route.
+# Routes within this are the same length; only then does the layer-change count
+# break the tie.  Well under one cell (0.05 m).
 LENGTH_EPSILON_M = 1e-6
 
 # nav2_map_server's PGM shade convention, mirrored so the private cache and the
-# served map agree cell for cell.  cf_auto.launch.py already clamps free_thresh
-# to this value when it derives its $TMPDIR copies, so that unknown (PGM 205,
-# shade 0.19608) stays unknown instead of silently becoming free.
+# served map agree cell for cell.  cf_auto.launch.py clamps free_thresh to this
+# value when it derives its $TMPDIR copies, so unknown (PGM 205, shade 0.19608)
+# stays unknown instead of becoming free.
 UNKNOWN_SAFE_FREE_THRESH = 0.196
 
 
@@ -86,12 +76,11 @@ class RouteLeg:
 @dataclass
 class LayerRoute:
     legs: List[RouteLeg] = field(default_factory=list)
-    # Distance actually flown by the returned legs: the shortcut polylines'
-    # Euclidean length plus every vertical hop.  This is the honest number.
+    # Distance flown by the returned legs: shortcut polyline length
+    # plus every vertical hop.
     length_m: float = 0.0
-    # The cost the search minimised, measured on the un-shortcut cell path.
-    # Kept separate because shortcutting runs *after* the search, exactly as in
-    # cf_auto's existing 2D planner.
+    # The cost the search minimised, on the un-shortcut cell path.  Shortcutting
+    # runs after the search, as in cf_auto's 2D planner, so the two differ.
     search_cost_m: float = 0.0
     layer_changes: int = 0
 
@@ -135,11 +124,10 @@ def _read_pgm(path: str) -> np.ndarray:
 def load_grid_spec(yaml_path: str) -> GridSpec:
     """Decode a saved map yaml + pgm the way nav2_map_server would.
 
-    ``free_thresh`` is clamped exactly as ``cf_auto.launch.py`` clamps it, so a
-    cache entry built straight from the *original* map files matches the
-    ``$TMPDIR`` corrected copy the map server is actually serving.  Unknown must
-    stay unknown: ``GridMap`` treats -1 as blocked, which is what keeps the
-    planner out of unexplored space.
+    ``free_thresh`` is clamped as ``cf_auto.launch.py`` clamps it, so a cache
+    entry built from the original map files matches the ``$TMPDIR`` corrected
+    copy the map server serves.  Unknown must stay unknown: ``GridMap`` treats
+    -1 as blocked, which is what keeps the planner out of unexplored space.
     """
     with open(yaml_path, 'r') as handle:
         meta = yaml.safe_load(handle) or {}
@@ -166,7 +154,7 @@ def load_grid_spec(yaml_path: str) -> GridSpec:
     occupancy[shade < free_thresh] = 0
     occupancy[shade > occupied_thresh] = 100
 
-    # PGM row 0 is the TOP of the image; ROS occupancy row 0 is the map's
+    # PGM row 0 is the top of the image; ROS occupancy row 0 is the map's
     # minimum y.  map_server flips, so the cache must flip too or every cached
     # layer would be mirrored against the served one.
     occupancy = np.flipud(occupancy)
@@ -198,11 +186,10 @@ def occupancy_message_from_spec(spec: GridSpec):
 def load_layer_grids(urls: Sequence[str], grid_factory) -> Dict[int, object]:
     """Build the private, planning-only grid cache.
 
-    ``grid_factory(message)`` is ``cf_auto``'s ``GridMap`` constructor already
-    bound to the mission's inflation and occupancy threshold.  The returned
-    objects are owned solely by the static planner: nothing may ever call
-    ``mark_blocked_disc`` on them, or a live obstacle would silently become part
-    of the saved-map picture on every layer.
+    ``grid_factory(message)`` is ``cf_auto``'s ``GridMap`` constructor bound to
+    the mission's inflation and occupancy threshold.  Nothing may call
+    ``mark_blocked_disc`` on the result: a live obstacle would then join the
+    saved-map picture on every layer.
     """
     grids: Dict[int, object] = {}
     for index, url in enumerate(urls):
@@ -232,11 +219,11 @@ def _require_aligned(grids: Dict[int, object], layers: Sequence[int]) -> None:
 
 def transition_allowed(grids: Dict[int, object], a: int, b: int,
                        cell: Cell) -> bool:
-    """A vertical hop is only valid where BOTH layers are safely traversable.
+    """A vertical hop is valid only where both layers are traversable.
 
-    ``is_free`` is the inflated layer, and inflation is grown from a mask in
-    which unknown is already blocked - so this single call enforces "known free
-    and outside the inflation margin" on each side at once.
+    ``is_free`` is the inflated layer, grown from a mask in which unknown is
+    already blocked, so one call means "known free and outside the inflation
+    margin" on each side.
     """
     if a not in grids or b not in grids:
         return False
@@ -262,15 +249,12 @@ def plan_3d_route(grids: Dict[int, object],
 
     The search space is (cell x, cell y, layer).  Horizontal edges are the same
     8-connected, no-corner-cutting moves ``GridMap.astar`` uses, priced in
-    metres.  Vertical edges join the *same* XY on *adjacent* layers, cost the
-    real altitude difference, and exist only where ``transition_allowed`` holds.
+    metres.  Vertical edges join the same XY on adjacent layers, cost the real
+    altitude difference, and exist only where ``transition_allowed`` holds.
 
-    Cost is therefore exactly the distance flown, with no layer-change penalty.
-    Where two routes are equal to within ``LENGTH_EPSILON_M``, the one with
-    fewer layer changes wins - a deterministic tie-break, not extra cost.
-
-    Returns ``None`` when no safe route exists.  Never returns a route that
-    ends anywhere but ``goal_layer``.
+    Cost is the distance flown; routes equal to within ``LENGTH_EPSILON_M`` are
+    broken by fewer layer changes.  Returns ``None`` when no safe route exists,
+    and never a route that ends anywhere but ``goal_layer``.
     """
     layers = sorted(grids)
     if not layers:
@@ -363,7 +347,7 @@ def plan_3d_route(grids: Dict[int, object],
             if other not in blocked:
                 continue
             if layer_blocked[cy, cx] or blocked[other][cy, cx]:
-                continue                      # must be safe on BOTH layers
+                continue                      # must be safe on both layers
             neighbour = encode((cx, cy), other)
             if neighbour in closed:
                 continue
@@ -392,9 +376,8 @@ def _relax(neighbour: int, current: int, tentative: float,
            open_heap, h: float) -> None:
     """Accept a cheaper route, or an equal-length one with fewer layer changes.
 
-    The tie-break is a comparison, never an addition: folding a layer-change
-    term into ``tentative`` would be exactly the artificial penalty the route
-    cost is required not to have.
+    The tie-break is a comparison, not a term added to ``tentative`` - that
+    would be the layer-change penalty the cost is meant not to have.
     """
     known = cost.get(neighbour)
     if known is not None:
@@ -456,19 +439,15 @@ def _append_move(route: LayerRoute, grids, layer: int,
 
 # -- diagonal transition geometry ----------------------------------------------
 #
-# A vertical hop stops at one XY and climbs in place.  A *diagonal* hop flies
-# the same altitude change while translating along the route it was going to
-# fly anyway on the target layer, so XY and Z move together.
+# A vertical hop stops at one XY and climbs in place.  A diagonal hop flies the
+# same altitude change while translating along the route already planned on the
+# target layer, so XY and Z move together.  The 3D A* above still chooses the
+# layers and the hop XY; these helpers only decide how far along that path the
+# hop can safely slide, which keeps the change in execution, not planning.
 #
-# Nothing here plans a route: the 3D A* above still chooses the layers and the
-# hop XY.  These helpers only decide how far along the ALREADY chosen
-# target-layer path it is safe to slide the hop, which is why the change is
-# confined to execution rather than planning.
-#
-# The corridor rule is deliberately the same one ``transition_allowed`` applies
-# to a single cell, sampled along the segment: intermediate altitudes have no
-# occupancy map of their own, so a diagonal is only safe where BOTH the layer
-# it leaves and the layer it joins are free in the inflated grid.
+# Intermediate altitudes have no occupancy map, so the corridor rule is
+# ``transition_allowed`` applied to every sample: free on the layer being left
+# and on the layer being joined.
 
 DIAGONAL_SAMPLE_STEP_M = 0.05
 DIAGONAL_MIN_SPAN_M = 0.10
@@ -477,8 +456,8 @@ DIAGONAL_MIN_SPAN_M = 0.10
 def interpolate_segment(p0: Point, p1: Point, s: float) -> Point:
     """Straight-line interpolation; ``s`` is clamped to [0, 1].
 
-    ``s = 0`` returns exactly ``p0`` and ``s = 1`` exactly ``p1`` - the
-    endpoints are reproduced bit for bit, not merely approached.
+    ``s = 0`` and ``s = 1`` return the endpoints exactly, not a rounded
+    approximation of them.
     """
     if s <= 0.0:
         return (p0[0], p0[1])
@@ -513,13 +492,12 @@ def point_at_arclength(points: Sequence[Point], span_m: float) -> Optional[Point
 def diagonal_corridor_free(grids: Dict[int, object], source_layer: int,
                            target_layer: int, p0: Point, p1: Point,
                            step_m: float = DIAGONAL_SAMPLE_STEP_M) -> bool:
-    """True when every sample of the P0->P1 segment clears BOTH layers.
+    """True when every sample of the p0->p1 segment clears both layers.
 
-    Conservative by construction: the aircraft passes through altitudes that
-    neither saved map describes, so a cell must be free on the layer being left
-    *and* the layer being joined.  ``transition_allowed`` is reused verbatim, so
-    unknown cells and the inflation margin are handled exactly as everywhere
-    else in this stack.
+    The aircraft passes through altitudes no saved map describes, so a cell must
+    be free on the layer being left and on the one being joined.  Reuses
+    ``transition_allowed``, so unknown cells and the inflation margin are
+    handled as elsewhere in this stack.
     """
     if source_layer not in grids or target_layer not in grids:
         return False
@@ -542,11 +520,10 @@ def plan_diagonal_endpoint(grids: Dict[int, object], source_layer: int,
                            ) -> Optional[Point]:
     """Farthest safe diagonal endpoint along ``target_path``, or ``None``.
 
-    ``max_span_m`` is the horizontal distance the aircraft can actually cover
-    while it changes altitude, so it comes from the configured speeds rather
-    than from any guess about the map.  The span is shortened geometrically
-    until the corridor clears; ``None`` means no diagonal is safe here and the
-    caller must fall back to the validated vertical hop.
+    ``max_span_m`` is the horizontal distance the aircraft can cover while it
+    changes altitude, derived from the configured speeds.  The span shrinks
+    geometrically until the corridor clears; ``None`` means no diagonal is safe
+    here and the caller falls back to the vertical hop.
     """
     if max_span_m <= min_span_m or not target_path:
         return None

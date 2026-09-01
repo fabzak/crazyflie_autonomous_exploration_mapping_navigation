@@ -12,55 +12,44 @@ layer_explore:
     cruise_speed_mps: 0.20
     climb_speed_mps: 0.10
 
-    # Layer altitudes are measured in flight, never listed here: PROBE feeds
-    # the observed floor/ceiling to layers_below_ceiling(), which returns
-    # floor((room - clearance)/spacing) altitudes at multiples of the spacing.
-    # Only the spacing is overridden - tighter than the 0.50 m default to suit
-    # a low indoor room.  The layer COUNT is whatever the room supports, and
-    # layer_ceiling_clearance_m keeps its 0.50 m default: no real-only
-    # override, so a real run derives its stack exactly as simulation does.
+    # Layer altitudes are measured in flight (PROBE -> layers_below_ceiling),
+    # not listed here.  Only the spacing is overridden, tighter than the 0.50 m
+    # default for a low indoor room; the layer count is whatever the room
+    # supports, and layer_ceiling_clearance_m keeps its 0.50 m default.
     layer_spacing_m: 0.40
 
-    # max_layers and halt_after_state are deliberately absent.  Both remain
-    # available as generic optional debugging bounds (defaults 0 = unbounded
-    # and "" = disabled), but the real profile imposes neither, so exploration
-    # runs TAKEOFF -> PROBE -> SCAN -> SELECT -> NAVIGATE -> save -> next layer
-    # -> LAND -> DONE on its own completion criteria.
+    # max_layers and halt_after_state stay at their unbounded defaults: the
+    # real profile imposes no mission bound.
 
     # Real-hardware operator gate.  layer_explore holds motionless, publishing
     # an explicit zero command, until real_operator_control publishes True
     # here in response to the operator's G key.  Empty in simulation.
     start_gate_topic: "/real_operator/autonomy_authorized"
 
-    # Measured in the actual flight room on 2026-08-22, replacing the 2.475 m
-    # default that was derived from the Gazebo world ceiling.  Three static
-    # hand measurements of (odom z + up ranger) gave 2.74 / 2.82 / 2.85 m; the
-    # up ranger sees the ceiling comfortably inside its 3.49 m limit, so this
-    # fallback should never actually be reached.  Used only when the plane
-    # estimator cannot resolve a real surface.
+    # Hand-measured in the flight room: three static (odom z + up ranger)
+    # readings gave 2.74 / 2.82 / 2.85 m.  Fallback only - the up ranger sees
+    # the ceiling well inside its 3.49 m range - used when the plane estimator
+    # cannot resolve a real surface.
     fallback_floor_height_m: 0.0
     fallback_ceiling_height_m: 2.80
 
-    # 0.40 m keeps the airframe clear of ground effect and inside the Flow
-    # deck's reliable band, unlike the 0.20 m first guess.
+    # Overhead margin the up ranger must still see beyond the remaining climb
+    # before TAKEOFF or ASCEND may continue; slightly under the 0.35 m default.
     ascend_min_headroom_m: 0.30
     takeoff_min_height_m: 0.20
     takeoff_overshoot_m: 0.03
 
-    # The real control adapter clamps yaw to max_yaw_rate_radps (0.30).
+    # The real control adapter clamps yaw to max_yaw_rate_radps (0.30), and
     # layer_explore sizes the SCAN timeout as angle/scan_yaw_rate, so a
-    # commanded rate above that cap would be silently clamped and the sweep
-    # would time out before completing.  Stay under the cap instead of
-    # raising it: slower yaw also keeps the Flow deck's estimate cleaner.
+    # commanded rate above the cap is clamped and the sweep times out before
+    # it completes.  Slower yaw also keeps the Flow deck's estimate cleaner.
     scan_yaw_rate: 0.25
 
     # Real Multi-ranger streams, not Gazebo's synthetic full scan.
     use_gazebo_full_scan: false
     freshness_timeout_sec: 0.50
     maximum_sensor_age_sec: 0.35
-    # NOTE: layer_explore.py applies max(0.5, value) to this parameter, so any
-    # value below 0.5 is inert.  Recorded at the real floor to stop the file
-    # implying a tighter bound than the code enforces.
+    # layer_explore.py applies max(0.5, value), so anything lower is inert.
     future_timestamp_tolerance_sec: 0.50
     future_observation_queue_timeout_sec: 0.50
     geometry_update_rate_hz: 10.0

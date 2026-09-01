@@ -1,9 +1,8 @@
-"""Operator interlock proofs for the shared real-hardware control layer.
+"""Operator interlocks: :class:`OperatorSupervisor` and :class:`KeyDebouncer`.
 
-These exercise :class:`OperatorSupervisor` and :class:`KeyDebouncer` directly,
-with caller-supplied monotonic time and no ROS, so every safety interlock is
-provable without a vehicle.  Emergency behaviour in particular must never be
-tested for the first time with a flying aircraft.
+Driven with caller-supplied monotonic time and no ROS, so the interlocks are
+testable without a vehicle - emergency behaviour especially should not be
+exercised for the first time on a flying aircraft.
 """
 
 import pytest
@@ -84,7 +83,7 @@ def test_start_while_disarmed_does_nothing_and_never_arms():
     assert 'not armed' in message
     assert core.state == OperatorState.DISARMED
     assert core.authorized(1.0) is False
-    # Pressing G must never be an implicit arm request.
+    # G is not an implicit arm request.
     assert core.required_service() is None
     assert core.arm_request_pending is False
 
@@ -467,10 +466,9 @@ def test_landing_that_never_confirms_keeps_warning():
 
 # ── releasing the airborne latch ──────────────────────────────────────────
 #
-# Found on the bench: after a hand-carried sensor check lifted the drone to
-# 0.6 m, the airborne latch never cleared and Alt refused to arm.  A vehicle
-# that was picked up and set back down must be armable again, but no in-flight
-# altitude dip may clear the latch.
+# A drone lifted by hand (sensor check) latches airborne and Alt refuses to
+# arm.  Setting it down must make it armable again, but an in-flight altitude
+# dip must not clear the latch.
 
 
 def test_hand_carried_drone_can_be_armed_after_being_set_down():
@@ -524,7 +522,7 @@ def test_latch_release_needs_fresh_telemetry():
 
 
 def test_landing_state_still_owns_its_own_latch_release():
-    """LANDING must reach DISARMED_STOPPED, not silently un-latch early."""
+    """LANDING must reach DISARMED_STOPPED, not un-latch early on its own."""
     core = supervisor(OperatorConfig(grounded_debounce_sec=0.2))
     now = run_autonomy(core)
     feed(core, now + 1.0, ARMED_FLYING, height=0.40)
@@ -536,24 +534,23 @@ def test_landing_state_still_owns_its_own_latch_release():
     assert core.airborne(now + 4.0) is False
 
 
-# ── reconciling with a vehicle that is already armed ──────────────────────
+# ── adopting a vehicle that is already armed ──────────────────────────────
 #
-# Found on the bench: an L abort lands but never disarms, so the next launch
-# met a vehicle reporting IS_ARMED with CAN_BE_ARMED clear.  The node sat in
-# DISARMED and rejected every Alt press, deadlocking the operator out of a
-# perfectly flyable aircraft.
+# An L abort lands without disarming, so the next launch meets a vehicle
+# reporting IS_ARMED with CAN_BE_ARMED clear.  Alt must adopt that vehicle
+# instead of rejecting every press.
 
 
 def test_alt_adopts_a_vehicle_that_is_already_armed():
     core = supervisor()
-    # Already armed and grounded from a previous run; CAN_BE_ARMED is clear
-    # precisely because it is armed.
+    # Already armed and grounded from an earlier run; CAN_BE_ARMED is clear
+    # because it is armed.
     already = SUPERVISOR_CAN_FLY | SUPERVISOR_IS_ARMED
     feed(core, 1.0, already, height=0.02)
     message = core.on_key(KeyEvent.ARM_TOGGLE, 1.0)
     assert 'already ARMED' in message
     assert core.state == OperatorState.ARMED_IDLE
-    # No redundant Arm request is generated.
+    # No redundant arm request is generated.
     assert core.required_service() is None
     assert core.arm_request_pending is False
 
@@ -610,12 +607,11 @@ def test_confirmed_landing_disarms_the_motors():
 
 # ── odometry drift bound ──────────────────────────────────────────────────
 #
-# Caught during pre-arm checks on 2026-08-22: after a battery swap the drone
-# was carried to the takeoff spot while powered, and the Flow deck integrated
-# the apparent motion into an odometry position of (39.25, -19.52) m.  The
-# estimator only zeroes at boot.  layer_explore maps into a fixed 650x650 grid
-# at 0.05 m centred on the odometry origin, i.e. +/-16.25 m, so starting from
-# that pose would have mapped off-grid from the very first observation.
+# The Flow deck integrates motion whenever powered and the estimator only
+# zeroes at boot, so carrying the drone to the takeoff spot can leave odometry
+# tens of metres out (39.25, -19.52 m measured).  layer_explore maps into a
+# fixed 650x650 grid at 0.05 m centred on the odometry origin, i.e.
+# +/-16.25 m, so starting there maps off-grid from the first observation.
 
 
 def test_drifted_odometry_blocks_the_start_gate():
@@ -673,11 +669,10 @@ def test_the_bound_stays_inside_the_layer_explore_map():
 
 # ── taking off from a raised support ──────────────────────────────────────
 #
-# Observed 2026-08-22: with the drone resting on a 0.161 m stand (used so the
-# Flow deck is in range before takeoff), an ABSOLUTE grounded_height_m of
-# 0.12 latched the vehicle permanently airborne, and every Alt press was
-# refused with "aircraft is airborne or its state is unknown".  The threshold
-# has to be a margin above the resting altitude, learned from the vehicle.
+# The drone rests on a 0.161 m stand so the Flow deck is in range before
+# takeoff.  An absolute grounded_height_m of 0.12 latches such a vehicle
+# permanently airborne and every Alt press is refused, so the threshold is a
+# margin above a resting altitude learned from the vehicle itself.
 
 
 STAND_Z = 0.161
@@ -746,7 +741,7 @@ def test_relative_threshold_still_rejects_airborne_disarm_from_a_stand():
 
 
 def test_floor_takeoff_behaviour_is_unchanged():
-    """A drone resting at z=0 keeps exactly the previous threshold."""
+    """For a floor rest the threshold reduces to plain grounded_height_m."""
     core = supervisor()
     now = resting_on_stand(core, 1.0, height=0.02)
     assert core.airborne_height_threshold() == pytest.approx(
@@ -757,11 +752,11 @@ def test_floor_takeoff_behaviour_is_unchanged():
     assert core.airborne(now + 0.1) is True
 
 
-# ── Alt replaces Ctrl as the ARM / grounded-DISARM key ────────────────────
+# ── Alt is the ARM / grounded-DISARM key ──────────────────────────────────
 #
-# Migrated 2026-08-22.  Ctrl was retired because it collides with ordinary
-# terminal use under the global X11 hook.  These tests pin the new contract:
-# Alt is the only arming key, Ctrl is inert, and G/L/SPACE are untouched.
+# Ctrl was retired: under the global X11 hook it collides with ordinary
+# terminal use.  Alt is the only arming key, Ctrl is inert, G/L/SPACE
+# unchanged.
 
 
 def test_ctrl_is_no_longer_bound_to_anything():
@@ -818,14 +813,14 @@ def test_alt_while_grounded_and_armed_requests_ground_disarm_once():
 
 
 def test_pynput_maps_both_alt_keys_and_ignores_ctrl_and_altgr():
-    """Key routing at the backend edge, where the retirement really lands."""
+    """Key routing at the pynput backend edge, where the binding takes effect."""
     pynput_keyboard = pytest.importorskip('pynput.keyboard')
     from cf_explore.real_operator_control import _pynput_key_name
 
     for key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r,
                 pynput_keyboard.Key.alt):
         assert _pynput_key_name(key) == 'alt'
-    # Ctrl must no longer reach the supervisor at all.
+    # Ctrl must not reach the supervisor.
     for key in (pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r,
                 pynput_keyboard.Key.ctrl):
         assert _pynput_key_name(key) is None
@@ -850,12 +845,10 @@ def test_emergency_latch_blocks_alt_and_g():
     assert core.arm_request_pending is False
 
 
-# ── HL_LAND software path: nothing may perturb an active landing ──────────
+# ── HL_LAND: nothing may perturb an active landing ────────────────────────
 #
-# Added 2026-08-22 while bounding the HL_LAND yaw behaviour.  The landing
-# itself is planned by the Crazyflie firmware once the Land service is
-# accepted; the operator layer's whole job from that point is to keep out of
-# the way.  These pin that.
+# Once the Land service is accepted the firmware plans the descent; the
+# operator layer's only job from there is to stay out of the way.
 
 
 def test_repeated_l_does_not_issue_a_second_landing():
@@ -893,13 +886,12 @@ def test_alt_during_an_active_landing_is_rejected_with_a_reason():
     assert core.state == OperatorState.LANDING
 
 
-# ── operator state must reconcile when autonomy ends without an L ─────────
+# ── reconciling when autonomy ends without an L ───────────────────────────
 #
-# Observed 2026-08-23: the watchdog latched stale:odom:source_stamp, the
-# adapter landed and disarmed the aircraft, the supervisor returned to
-# grounded/disarmed - and this node still reported AUTONOMY_RUNNING for a
-# disarmed aircraft sitting on the floor.  The operator state must converge on
-# real telemetry, not only on a keypress, without ever re-arming.
+# The watchdog or the adapter can land and disarm the aircraft with no
+# operator key involved.  Operator state must then converge on telemetry
+# (grounded and disarmed) rather than staying in AUTONOMY_RUNNING - and must
+# never re-arm on the way.
 
 
 def test_watchdog_landing_while_running_converges_to_disarmed_stopped():
@@ -919,10 +911,9 @@ def test_watchdog_landing_while_running_converges_to_disarmed_stopped():
 
 
 def test_reconciliation_needs_both_grounded_and_disarmed():
-    """Grounded but still ARMED is the pre-takeoff case - must NOT end."""
+    """Grounded but still ARMED is the pre-takeoff case - must not end."""
     core = supervisor()
     now = run_autonomy(core)
-    # Straight after G the aircraft is grounded and armed; the run continues.
     feed(core, now + 0.2, ARMED_READY, height=0.01)
     core.tick(now + 0.2)
     assert core.state == OperatorState.AUTONOMY_RUNNING
@@ -935,7 +926,7 @@ def test_reconciliation_cannot_fire_on_stale_status():
     now = run_autonomy(core)
     feed(core, now + 1.0, ARMED_FLYING, height=0.40)
     core.tick(now + 1.0)
-    # Telemetry goes stale entirely - no fresh evidence of anything.
+    # Telemetry goes stale: no fresh evidence of anything.
     core.tick(now + 30.0)
     assert core.state == OperatorState.AUTONOMY_RUNNING
 
@@ -960,7 +951,6 @@ def test_reconciled_run_is_terminal_and_never_rearms():
     feed(core, now + 5.0, GROUNDED_READY, height=0.01)
     core.tick(now + 5.0)
     assert core.state == OperatorState.DISARMED_STOPPED
-    # No auto-arm, and neither key can restart the run.
     assert core.required_service() is None
     assert core.arm_request_pending is False
     assert 'REJECTED' in core.on_key(KeyEvent.ARM_TOGGLE, now + 5.1)
@@ -983,7 +973,7 @@ def test_reconciliation_leaves_the_operator_l_path_unchanged():
 
 
 def test_reconciliation_does_not_bypass_the_emergency_latch():
-    """SPACE still wins: emergency, not a quiet grounded convergence."""
+    """SPACE wins: emergency, not a grounded convergence."""
     core = supervisor()
     now = run_autonomy(core)
     feed(core, now + 1.0, ARMED_FLYING, height=0.40)

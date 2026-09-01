@@ -4,7 +4,7 @@ Two halves:
 
 * the node integration -- where the plane is latched, where it is released, and
   which states it must not touch (TAKEOFF, LAND, PROBE, the headroom gate);
-* a closed loop that runs the REAL ``RealControlCore`` against the firmware's
+* a closed loop that runs the real ``RealControlCore`` against the firmware's
   own vertical equations, so "the old path terrain-follows" and "the new path
   does not" are measured rather than asserted.
 """
@@ -46,11 +46,8 @@ class _Publisher:
 
 
 def explorer(**attributes):
-    """A LayerExplorer with only what the method under test reads.
-
-    Same construction as test_layer_explore_start_gate and
-    test_layer1_save_no_ascend: no ROS node, no hardware, real methods.
-    """
+    """A LayerExplorer carrying only what the method under test reads: real
+    methods, no ROS node."""
     node = object.__new__(LayerExplorer)
     node._logger = _Logger()
     node.get_logger = lambda: node._logger
@@ -87,9 +84,9 @@ def drift(node, start, end, step=0.01):
     """Move the aircraft, not the ground.
 
     Sub-trigger changes are aircraft motion by definition, so the
-    reconstruction follows them and the plane error grows -- which is exactly
-    what the hold has to correct.  A single 0.06 m jump would instead be read
-    as terrain, and correctly ignored.
+    reconstruction follows them and the plane error grows, which is what the
+    hold has to correct.  A single 0.06 m jump would be read as terrain and
+    ignored.
     """
     distance, direction = start, (1.0 if end > start else -1.0)
     while abs(distance - end) > 1e-9:
@@ -98,11 +95,9 @@ def drift(node, start, end, step=0.01):
 
 
 def climb(node, start, end, vz=0.10, dt=0.1):
-    """Feed the tracker a genuine commanded climb.
-
-    The ground distance rises with the aircraft, and the tracker is told what
-    was commanded, so a real ascent is never absorbed as terrain.
-    """
+    """Feed the tracker a commanded climb: the ground distance rises with the
+    aircraft and the tracker is told what was commanded, so an ascent is not
+    absorbed as terrain."""
     distance = start
     while distance < end - 1e-9:
         distance = min(end, distance + vz * dt)
@@ -139,7 +134,7 @@ def test_nothing_is_commanded_vertically_while_no_layer_is_engaged():
 
 
 def test_the_feature_can_be_disabled_wholesale():
-    """layer_altitude_hold_enabled=False restores the previous behaviour."""
+    """Disabled, the node commands no vertical velocity of its own."""
     node = explorer(_layer_altitude_engaged=True, layer_altitude_enabled=False)
     settle(node, 0.14)
     node._cmd()
@@ -156,7 +151,7 @@ def test_an_unusable_ground_distance_hands_altitude_back_downstream():
 
 
 def test_recovery_translation_still_holds_the_layer():
-    """An "altitude-holding" escape must hold the *layer*, not a stale latch."""
+    """An altitude-holding escape must hold the layer, not a stale latch."""
     node = engaged(explorer(pose=SimpleNamespace(x=0.0, y=0.0, z=0.20, yaw=0.0)),
                    0.20)
     drift(node, 0.20, 0.14)
@@ -192,15 +187,13 @@ def test_a_layer_cannot_be_latched_without_a_usable_reconstruction():
 
 
 def test_the_plane_does_not_change_the_takeoff_altitude_profile():
-    """Scope: terrain-independence only.
+    """The plane changes terrain-independence, not the takeoff profile.
 
-    TAKEOFF climbs to max(layer_heights[0], takeoff_min_height) + overshoot --
-    in simulation 0.50 + 0.05 -- to clear control_services' 0.5 m hover latch.
-    Latching the plane at the *measured* altitude keeps the aircraft exactly
-    where the existing profile put it.  Settling onto the nominal
-    layer_heights[] entry would also be defensible, and would make the flown
-    altitude match what save_layer records, but that is a separate
-    altitude-profile change and is deliberately NOT bundled here.
+    TAKEOFF climbs to max(layer_heights[0], takeoff_min_height) + overshoot -
+    in simulation 0.50 + 0.05 - to clear control_services' 0.5 m hover latch.
+    Latching the plane at the measured altitude leaves the aircraft where that
+    profile put it; settling onto the nominal layer_heights[] entry instead
+    would be a separate altitude-profile change.
     """
     node = engaged(explorer(layer=1, layer_heights=[0.50, 1.00]), 0.55)
     assert node._layer_reference_z == pytest.approx(0.55)
@@ -287,7 +280,7 @@ def test_landing_still_descends_with_the_plane_logic_present():
 
 
 def test_landing_over_a_raised_surface_still_descends():
-    """The plane must not fight a deliberate descent, whatever is underneath."""
+    """The plane must not fight a commanded descent, whatever is underneath."""
     node = explorer(_layer_altitude_engaged=True, climb_speed=0.10,
                     state='LAND', _land_called=True,
                     pose=SimpleNamespace(x=0.0, y=0.0, z=0.35, yaw=0.0))
@@ -431,8 +424,7 @@ def test_a_real_ascent_is_never_absorbed_as_terrain():
 
 
 def test_a_raised_obstacle_below_does_not_command_a_climb_above_the_layer():
-    """The core safety invariant: nothing may climb merely because something
-    passed underneath."""
+    """Nothing may climb because something passed underneath."""
     node = explorer(_layer_altitude_engaged=True, layer=2,
                     layer_heights=[0.20, 0.40])
     settle(node, 0.40)
@@ -496,7 +488,7 @@ def _fly_over_obstacle(new_path, layer_z=0.40, obstacle=0.20,
     """Hold ``layer_z`` while a raised obstacle passes underneath.
 
     Returns the true world altitude at every control tick.  The obstacle is
-    present from t=4 s to t=9 s; true altitude starts exactly on the layer.
+    present from t=4 s to t=9 s; true altitude starts on the layer.
     """
     config = ControlConfig(
         max_xy_speed=0.25, max_vz=0.10, max_yaw_rate_rad=0.50,
@@ -540,8 +532,8 @@ def _fly_over_obstacle(new_path, layer_z=0.40, obstacle=0.20,
                 command = tracker.hold_velocity(layer_z)
                 owns = command is not None
                 autonomy_vz = 0.0 if command is None else command
-                # The explicit ownership claim, exactly as layer_explore
-                # publishes it: an exact 0.0 stays a real command.
+                # The ownership claim, as layer_explore publishes it: an
+                # exact 0.0 stays a real command.
                 core.update_z_authority(owns, now)
             else:
                 autonomy_vz = 0.0                 # pre-fix: hold downstream
@@ -561,12 +553,9 @@ def _fly_over_obstacle(new_path, layer_z=0.40, obstacle=0.20,
 
 
 def test_old_path_terrain_follows_over_a_raised_obstacle():
-    """The defect, measured: holding odom.z is holding height above ground.
-
-    The estimator is pulled down to the box top, the downstream z_target hold
-    reads that as "too low", and the aircraft physically climbs by the height
-    of the obstacle.
-    """
+    """Holding odom.z is holding height above ground: the estimator is pulled
+    down to the box top, the z_target hold reads that as too low, and the
+    aircraft climbs by the height of the obstacle."""
     altitudes = _fly_over_obstacle(new_path=False)
     excursion = max(abs(value - 0.40) for value in altitudes)
     assert max(altitudes) > 0.56, max(altitudes)
@@ -596,7 +585,7 @@ def test_the_new_path_does_not_drop_when_the_obstacle_is_left_behind():
 
 
 def test_flat_floor_regression_is_unchanged_by_the_new_path():
-    """With no obstacle at all, old and new must behave identically well."""
+    """Over a flat floor both paths must hold the layer equally well."""
     old = _fly_over_obstacle(new_path=False, obstacle=0.0)
     new = _fly_over_obstacle(new_path=True, obstacle=0.0)
     assert max(abs(value - 0.40) for value in old) < 0.01

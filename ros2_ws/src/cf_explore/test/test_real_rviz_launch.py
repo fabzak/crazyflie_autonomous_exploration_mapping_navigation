@@ -1,22 +1,14 @@
-"""RViz lifecycle for the real exploration launch.
+"""RViz in the real exploration launch.
 
-The real workflow should give the operator the same live view simulation has,
-and the visualiser's lifetime must follow the *application*, not the aircraft.
-That distinction is the whole point of this file: RViz must already be up
-before ``Left Alt`` and ``G``, and must survive ``L``, ``SPACE``, landing,
-``DISARMED_STOPPED`` and ``EMERGENCY_LATCHED`` so the operator can inspect the
-map, TF, path and ranger state *after* a fault - which is exactly when it
-matters most.
+The viewer's lifetime follows the launch, not the aircraft: it must be up
+before ``Left Alt`` and ``G``, and survive ``L``, ``SPACE``, landing,
+``DISARMED_STOPPED`` and ``EMERGENCY_LATCHED``, since inspecting map, TF, path
+and ranger state matters most after a fault.
 
-These tests build the real ``LaunchDescription`` and inspect the actual
-actions and conditions rather than grepping source text.
-
-The lifecycle guarantee is structural: the RViz action is a plain top-level
-``Node`` whose only condition is ``use_rviz``.  Nothing in the launch watches
-operator state, armed state or the emergency latch, and the launch registers
-no event handler and no ``Shutdown`` action, so no aircraft state can reach
-it.  ``ros2 launch`` terminates its own processes on shutdown, which is what
-closes RViz.  The tests below pin each half of that.
+Structurally that means a top-level ``Node`` conditioned only on ``use_rviz``,
+with no event handler and no ``Shutdown`` action anywhere in the launch.
+These tests build the real ``LaunchDescription`` and inspect actions and
+conditions rather than source text.
 """
 
 import importlib.util
@@ -33,7 +25,7 @@ from launch_ros.actions import Node
 SHARE = get_package_share_directory('cf_explore')
 RVIZ_CONFIG = os.path.join(SHARE, 'config', 'layer_explore_real.rviz')
 
-#: What the real stack actually publishes; the config must match exactly.
+#: What the real stack publishes; the config must match.
 EXPECTED_TOPICS = {
     'Map': '/map',
     'Path': 'explore/path',
@@ -95,14 +87,13 @@ def test_rviz_can_be_disabled_for_headless_runs(description):
 def test_rviz_does_not_wait_for_arm_or_autonomy(real_launch, description):
     """The view must be up before Left Alt and before G.
 
-    _mapping_actions is the autonomy half of the launch and returns nothing at
-    all while autonomy_enabled is false.  RViz must therefore NOT come from
-    there - it has to be a top-level action.
+    _mapping_actions is the autonomy half of the launch and returns nothing
+    while autonomy_enabled is false, so RViz cannot come from there.
     """
     context = LaunchContext()
     context.launch_configurations['autonomy_enabled'] = 'false'
     assert real_launch._mapping_actions(context) == []
-    # ...and yet RViz is still present, because it is top level.
+    # ...and RViz is still present, because it is top level.
     assert _rviz_node(description) in description.entities
 
 
@@ -119,11 +110,9 @@ def test_rviz_is_a_viewer_and_cannot_actuate(description):
 @pytest.mark.parametrize('name', ['layer_explore_real.launch.py',
                                   'real_base.launch.py'])
 def test_no_launch_action_can_be_triggered_by_aircraft_state(name):
-    """No event handler and no Shutdown action anywhere in the real launch.
-
-    This is what guarantees L, SPACE, landing, DISARMED_STOPPED and
-    EMERGENCY_LATCHED cannot terminate RViz: there is simply no mechanism by
-    which an aircraft or operator state could reach a launch action.
+    """No event handler and no Shutdown action, so no aircraft or operator
+    state can reach a launch action: L, SPACE, landing, DISARMED_STOPPED and
+    EMERGENCY_LATCHED cannot terminate RViz.
     """
     description = _load(name).generate_launch_description()
     for entity in description.entities:
@@ -172,8 +161,8 @@ def test_rviz_config_shows_what_the_real_stack_publishes():
 
 
 def test_ranger_displays_match_the_publisher_qos():
-    """real_sensor_adapter publishes BEST_EFFORT; RViz defaults to Reliable
-    and a mismatched subscription shows nothing at all, silently."""
+    """real_sensor_adapter publishes BEST_EFFORT; RViz defaults to Reliable,
+    and a mismatched subscription shows nothing and reports no error."""
     config = yaml.safe_load(open(RVIZ_CONFIG))
     displays = {d['Name']: d for d in config['Visualization Manager']['Displays']}
     for sensor in RANGERS:
@@ -193,5 +182,5 @@ def test_ranger_displays_match_the_publisher_qos():
     ('operator_keyboard_backend', 'pynput'),
 ])
 def test_real_launch_safety_defaults_are_unchanged(description, name, expected):
-    """Adding a viewer must not have relaxed any hardware gate."""
+    """A viewer in the launch must not relax any hardware gate."""
     assert _declared(description, name).default_value[0].text == expected

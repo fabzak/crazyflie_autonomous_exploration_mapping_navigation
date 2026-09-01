@@ -157,10 +157,9 @@ def test_cannot_fly_withholds_preflight_then_latches_if_lost_in_flight():
     assert not decision.latched
     assert decision.reason == 'waiting_for:supervisor:cannot_fly'
 
-    # In flight, IS_FLYING is set; losing CAN_FLY there is a real hazard and
-    # must latch.  The fixture previously used supervisor_info=0, which has
-    # IS_FLYING clear and therefore modelled a grounded disarm rather than the
-    # in-flight loss the test name describes.
+    # In flight IS_FLYING is set, so losing CAN_FLY there is a real hazard and
+    # must latch.  supervisor_info=0 has IS_FLYING clear and would model a
+    # grounded disarm instead.
     active = SafetyEvaluator(config())
     make_healthy(active)
     active.note_status(
@@ -235,9 +234,9 @@ def test_watchdog_source_has_no_hardware_velocity_publisher():
 
 
 # ── Flight-state-aware down-ranger semantics ────────────────────────────────
-# On the ground the Flow ToF legitimately reads 8-13 mm, which the adapter
-# reports as its range_min rather than a measurement gap.  A genuine loss of
-# the floor signal still has to fail closed, but only while airborne.
+# On the ground the Flow ToF reads 8-13 mm, which the adapter reports as its
+# range_min rather than a measurement gap.  A real loss of the floor signal
+# still fails closed, but only while airborne.
 
 def test_no_measurement_down_is_accepted_while_grounded():
     evaluator = SafetyEvaluator(config())
@@ -312,13 +311,10 @@ def test_stale_down_still_fails_closed_while_grounded():
 
 # ── arming, disarming on the ground, and re-arming ────────────────────────
 #
-# Observed on hardware 2026-08-22: the operator armed (permit went healthy),
-# pressed Alt again to disarm on the ground, and the resulting
-# `supervisor:cannot_fly` latched a permanent fault.  _latched_reason is never
-# cleared, so re-arming could not recover it: the permit stayed false for the
-# rest of the launch and the aircraft silently refused to take off while
-# layer_explore commanded a climb into a void.  A disarmed vehicle on the
-# ground reporting CAN_FLY clear is the state it is supposed to be in.
+# A grounded disarm clears CAN_FLY.  Latching `supervisor:cannot_fly` on that
+# is permanent - _latched_reason is never cleared, so re-arming cannot recover
+# it and layer_explore keeps commanding a climb into a dead permit.  A disarmed
+# vehicle on the ground with CAN_FLY clear is in its correct state.
 
 
 def grounded_disarmed_status():
@@ -375,11 +371,11 @@ def test_losing_can_fly_while_flying_still_latches():
 
 
 def test_a_second_blocker_alongside_cannot_fly_still_latches():
-    """The exemption applies only when cannot_fly is the ONLY complaint."""
+    """The exemption applies only when cannot_fly is the only complaint."""
     evaluator = SafetyEvaluator(config())
     make_healthy(evaluator)
     assert evaluator.evaluate(NOW, NOW).permit
-    # Disarmed on the ground AND the command stream has gone stale.
+    # Disarmed on the ground and the command stream has gone stale.
     evaluator.note_status(grounded_disarmed_status(), NOW + 5.0, NOW + 5.0)
     decision = evaluator.evaluate(NOW + 5.0, NOW + 5.0)
     assert not decision.permit

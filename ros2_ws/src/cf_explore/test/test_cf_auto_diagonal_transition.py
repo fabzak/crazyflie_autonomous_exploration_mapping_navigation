@@ -1,18 +1,13 @@
-"""Gate: diagonal layer transitions.
+"""Diagonal layer transitions: a hop flies a straight 3D segment - XY and Z
+together - along the route the planner already chose on the target layer,
+instead of changing altitude in place.
 
-A layer hop used to stop at one XY and change altitude in place.  These tests
-cover the change that lets it instead fly a straight 3D segment - XY and Z
-together - along the route the planner had already chosen on the target layer.
+Two invariants run through the file:
 
-Two properties matter more than any other and are asserted repeatedly:
-
-1. The diagonal is *planned before it is flown*.  Its endpoints exist, and its
-   whole XY projection is checked against BOTH adjacent inflated maps, before
-   any motion begins.  Intermediate altitudes have no occupancy map of their
-   own, so the conservative intersection is the only honest rule.
-2. Every failure falls back to the validated vertical hop rather than aborting
-   the mission.  The in-place climb is the behaviour that has already flown;
-   the diagonal is an optimisation layered on top of it.
+1. The diagonal is planned before it is flown.  Intermediate altitudes have no
+   occupancy map of their own, so the whole XY projection must be free on both
+   adjacent inflated grids before any motion starts.
+2. Every failure falls back to the in-place vertical hop, never to an abort.
 """
 
 import math
@@ -52,7 +47,7 @@ def test_d1_endpoint_moves_in_xy_and_lands_on_the_target_layer():
     b = plan_diagonal_endpoint(grids, 0, 1, a, target_path, max_span_m=0.9)
     assert b is not None
     assert math.hypot(b[0] - a[0], b[1] - a[1]) == pytest.approx(0.9, abs=1e-6)
-    # The endpoint lies ON the planned target-layer path, not beside it.
+    # The endpoint lies on the planned target-layer path, not beside it.
     assert b[1] == pytest.approx(0.5, abs=1e-9)
 
 
@@ -81,7 +76,7 @@ def test_d2_interpolation_is_linear_and_clamped():
     p0, p1 = (0.0, 0.0), (2.0, 4.0)
     assert interpolate_segment(p0, p1, 0.5) == pytest.approx((1.0, 2.0))
     assert interpolate_segment(p0, p1, 0.25) == pytest.approx((0.5, 1.0))
-    # Out-of-range s must never extrapolate past the segment.
+    # Out-of-range s must not extrapolate past the segment.
     assert interpolate_segment(p0, p1, -3.0) == p0
     assert interpolate_segment(p0, p1, 9.0) == p1
 
@@ -90,7 +85,7 @@ def test_d2_point_at_arclength_endpoints():
     path = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
     assert point_at_arclength(path, 0.0) == (0.0, 0.0)
     assert point_at_arclength(path, 1.5) == pytest.approx((1.0, 0.5))
-    # Longer than the path -> the final vertex, never an extrapolation.
+    # Longer than the path -> the final vertex, not an extrapolation.
     assert point_at_arclength(path, 99.0) == (1.0, 1.0)
     assert point_at_arclength([], 1.0) is None
 
@@ -230,13 +225,9 @@ def test_d5_zero_span_falls_back():
 
 
 def test_d6_blocked_corridor_falls_back_to_the_vertical_hop():
-    """A wall immediately ahead leaves no usable diagonal at any span.
-
-    The wall sits one cell past A (resolution 0.1 m), so even the shortest
-    diagonal the planner will consider is already inside it and every
-    shortening attempt fails - which is exactly when the vertical hop must be
-    used instead.
-    """
+    """A wall one cell past A (resolution 0.1 m) leaves no usable diagonal at
+    any span: even the shortest candidate is inside it, so the vertical hop is
+    used instead."""
     rows_free = open_rows(40, 10)
     rows_wall = open_rows(40, 10)
     for y in range(10):
@@ -277,12 +268,9 @@ def test_d6_missing_layer_in_the_cache_falls_back():
 
 
 def test_d7_route_decomposes_a_two_layer_change_into_adjacent_hops():
-    """L3 -> L1 must arrive as two adjacent hops, never one 1.0 m jump.
-
-    This is a property of the existing 3D search - vertical edges only ever
-    join adjacent layers - and the diagonal executor inherits it, because it
-    only ever flies one TRANSITION leg at a time.
-    """
+    """L3 -> L1 arrives as two adjacent hops, not one 1.0 m jump: the 3D search
+    only builds vertical edges between adjacent layers, and the executor flies
+    one TRANSITION leg at a time."""
     grids = open_stack(width=20, height=6)
     route = layer_route.plan_3d_route(grids, HEIGHTS,
                                       grids[2].to_point((2, 3)), 2,
@@ -296,7 +284,7 @@ def test_d7_route_decomposes_a_two_layer_change_into_adjacent_hops():
 
 
 def test_d7_each_hop_is_validated_against_its_own_adjacent_pair():
-    """Every hop's corridor is checked against the two layers IT joins."""
+    """Every hop's corridor is checked against the two layers it joins."""
     grids = open_stack(width=20, height=6)
     route = layer_route.plan_3d_route(grids, HEIGHTS,
                                       grids[2].to_point((2, 3)), 2,

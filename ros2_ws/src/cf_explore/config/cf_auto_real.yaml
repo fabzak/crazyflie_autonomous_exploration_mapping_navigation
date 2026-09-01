@@ -12,39 +12,32 @@ cf_auto:
     up_range_topic: "/__ROBOT_NAME__/range/up"
     down_range_topic: "/__ROBOT_NAME__/range/down"
 
-    # Safe placeholder table. The launch preflight replaces these three from an
-    # arbitrary, validated list of map_real layer YAMLs; no layer count is
-    # hardcoded in the real launch path.
+    # Safe placeholder table.  The launch preflight replaces these three from
+    # the validated list of real layer YAMLs; no layer count is hardcoded in
+    # the real launch path.
     layer_ids: [1]
     layer_heights: [0.20]
     layer_map_urls: [""]
 
-    # FALLBACK MECHANISM, TYPE PLACEHOLDER ONLY - not mission data.
-    # Normal layer changes are derived from the saved layer grids by
-    # layer_route.plan_3d_route, which reads no configured point at all.  This
-    # table is consulted only where the static planner is unavailable (routing
-    # off, or a layer with no cached grid), and the launch preflight
-    # deliberately does NOT inject values into it: a real mission never needs
-    # hand-measured transition coordinates.  The degenerate 1->1 entry exists
-    # solely because ROS 2 Humble cannot type an empty array here, and
+    # Fallback mechanism and type placeholder, not mission data.  Layer
+    # changes come from the saved layer grids via layer_route.plan_3d_route,
+    # which reads no configured point; this table is consulted only where the
+    # static planner is unavailable (routing off, or a layer with no cached
+    # grid), and the launch preflight injects nothing into it.  The degenerate
+    # 1->1 entry exists because Humble cannot type an empty array here, and
     # _validate_waypoints skips it while the static planner owns transitions.
-    # Should the fallback ever become reachable, the strict free/inflation
-    # checks and the missing-hop abort both return unchanged.
     transition_from_ids: [1]
     transition_to_ids: [1]
     transition_points_xy: [0.0, 0.0]
 
-    # ROS 2 Humble cannot represent a typed empty numeric array in a YAML
-    # parameter file. This single placeholder is non-operational while the
-    # autonomy and dry-run gates retain their defaults; live autonomy must
-    # require an explicit operator-supplied mission.
+    # Humble cannot type an empty numeric array in a parameter file.  This
+    # placeholder is non-operational: the launch rejects it and requires an
+    # operator-supplied mission.
     waypoints_xyz: [0.0, 0.0, 0.20]
 
-    # multilayer_routing_enabled is deliberately absent, so the real profile
-    # keeps the generic default (on).  cf_auto self-disables it when fewer
-    # than two layer maps are available, so a single-layer real stack still
-    # works without any real-only override, and a multi-layer real stack gets
-    # the same discrete (x, y, layer) routing simulation uses.
+    # multilayer_routing_enabled is left at the generic default (on); cf_auto
+    # self-disables it below two layer maps, so a single-layer real stack needs
+    # no real-only override.
 
     # [POTREBNA PROVJERA] Unvalidated engineering starting points.
     takeoff_min_height_m: 0.20
@@ -68,11 +61,10 @@ cf_auto:
     safety_freshness_timeout_sec: 0.50
 
     # localize_enabled, vertical_bypass_enabled and max_replans_per_waypoint
-    # are deliberately absent: the real profile follows the same generic
-    # defaults as simulation (post-takeoff LOCALIZE sweep on, vertical bypass
-    # on, 3 replans per waypoint), so no real-only setting can cut a mission
-    # short.  yaw_align_enabled stays false because false is the algorithm's
-    # own default and simulation's value too - it is not a real-only limit.
+    # are left at the generic defaults (LOCALIZE sweep on, vertical bypass on,
+    # 3 replans per waypoint); the real profile adds no mission bound.
+    # yaw_align_enabled is false in simulation too, so it is not a real-only
+    # limit.
     yaw_align_enabled: false
 
 
@@ -84,8 +76,8 @@ cf_auto_planar_frame:
     planar_frame: "real_nav/amcl_base"
 
 
-# Odom-aligned collision scan. The real launch remaps its localization output
-# away so exactly one merger owns each consumed scan topic.
+# Odom-aligned collision scan.  The real launch remaps its localization output
+# away, so one merger owns each consumed scan topic.
 range_scan_merger:
   ros__parameters:
     use_sim_time: false

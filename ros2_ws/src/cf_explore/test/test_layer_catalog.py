@@ -1,10 +1,8 @@
 """Dynamic map-layer discovery.
 
-cf_auto used to be told how many layers existed by a fixed table in
-``config/cf_auto.yaml`` (``layer_ids: [1, 2, 3, 4]``) and a literal
-``for n in (2, 3, 4)`` in ``cf_auto.launch.py``.  The saved map directory is
-the only thing that actually knows, so these tests pin the discovery contract:
-whatever complete layer sets are on disk are exactly the layers cf_auto flies.
+The saved map directory is the only thing that knows how many layers exist:
+whatever complete layer sets are on disk are the layers cf_auto flies.  Neither
+``config/cf_auto.yaml`` nor ``cf_auto.launch.py`` may restate the count.
 """
 
 import json
@@ -91,7 +89,7 @@ def test_layer_count_follows_the_directory(tmp_path, count):
 
 
 def test_three_layers_is_not_a_missing_layer_four(tmp_path):
-    """Layer 4's absence is normal, never an error, when 1-3 are complete."""
+    """Layer 4's absence is normal, not an error, when 1-3 are complete."""
     build_stack(tmp_path, 3)
     layers = discover_layers(str(tmp_path))
     assert len(layers) == 3
@@ -185,7 +183,7 @@ def test_partial_layer_set_is_an_error(tmp_path, absent):
 
 
 def test_yaml_only_layer_four_is_an_error(tmp_path):
-    """The exact case named in the brief: orphan YAML, no PGM and no JSON."""
+    """Orphan YAML with no PGM and no JSON."""
     build_stack(tmp_path, 3)
     write_layer(tmp_path, 4, make_pgm=False, make_json=False)
     with pytest.raises(LayerCatalogError) as excinfo:
@@ -263,7 +261,7 @@ def test_catalog_entry_carries_everything_the_planner_needs(tmp_path):
 
 
 def test_table_helper_returns_matched_parallel_arrays(tmp_path):
-    """launch files need flat arrays; they must be derived, never hand-kept."""
+    """launch files need flat arrays; they must be derived, not hand-kept."""
     build_stack(tmp_path, 3)
     layers = discover_layers(str(tmp_path))
     ids, heights, urls = layer_catalog.layer_table(layers)

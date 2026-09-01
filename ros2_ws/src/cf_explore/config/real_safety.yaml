@@ -1,6 +1,7 @@
-# Shared real sensor/control/safety boundary. Hardware identity placeholders are
-# rejected by the real launch preflight. The launch-level autonomy gate also
-# defaults to false; dry_run below independently prevents hardware interfaces.
+# Shared real sensor/control/safety boundary.  Hardware identity placeholders
+# are rejected by the real launch preflight; the launch-level autonomy gate
+# defaults to false, and dry_run below independently blocks the hardware
+# interfaces.
 real_sensor_adapter:
   ros__parameters:
     input_topic: "/__ROBOT_NAME__/range_raw"
@@ -42,14 +43,14 @@ real_safety_watchdog:
     future_stamp_tolerance_sec: 0.05
     require_can_fly: true
     # Measured on hardware: flat on the floor the Flow ToF reports 0 mm (its
-    # no-measurement code), and it only starts returning a valid distance
-    # after the airframe has climbed clear of its minimum range.  IS_FLYING
-    # is asserted before that, so this bound must outlast the takeoff
-    # transient while still catching a genuine loss of the floor signal.
+    # no-measurement code) and only returns a valid distance once the airframe
+    # has climbed clear of its minimum range.  IS_FLYING asserts before that,
+    # so this bound must outlast the takeoff transient and still catch a real
+    # loss of the floor signal.
     airborne_down_loss_timeout_sec: 2.0
-    # Raw battery/radio semantics require hardware evidence before thresholds
-    # are enabled. Negative values deliberately disable only these optional
-    # thresholds; freshness and CAN_FLY remain mandatory.
+    # Raw battery/radio semantics need hardware evidence first.  Negative
+    # disables these optional thresholds only; freshness and CAN_FLY stay
+    # mandatory.
     battery_min_voltage_v: -1.0
     rssi_min_value: -1.0
     rssi_max_value: -1.0
@@ -70,11 +71,11 @@ real_control_adapter:
     hardware_service_prefix: "/__ROBOT_NAME__"
     world_frame: "__ROBOT_NAME__/odom"
 
-    # Autonomy may never arm this aircraft.  The operator arms with Alt and
-    # releases the autonomy gate with G; this adapter only verifies that the
-    # firmware supervisor already reports ARMED.  Authorization is a
-    # heartbeat, so a dead operator node revokes it and an airborne vehicle
-    # is landed by the normal gate-failure path.
+    # Autonomy never arms this aircraft: the operator arms with Alt and
+    # releases the gate with G, and this adapter only checks that the firmware
+    # supervisor already reports ARMED.  Authorization is a heartbeat, so a
+    # dead operator node revokes it and an airborne vehicle lands by the
+    # gate-failure path.
     require_operator_authorization: true
     operator_timeout_sec: 0.50
     operator_authorization_topic: "/real_operator/autonomy_authorized"
@@ -82,8 +83,7 @@ real_control_adapter:
     control_period_sec: 0.05
     command_timeout_sec: 0.25
     odom_timeout_sec: 0.35
-    # 12 permit samples at 20 Hz.  The previous 0.25 s against a 5 Hz
-    # heartbeat left 50 ms of jitter margin.
+    # 12 permit samples at the watchdog's 20 Hz permit_period_sec.
     permit_timeout_sec: 0.60
     status_timeout_sec: 1.00
     future_stamp_tolerance_sec: 0.05
@@ -94,7 +94,7 @@ real_control_adapter:
     service_timeout_sec: 0.50
     # ros2 launch escalates SIGINT to SIGTERM after ~5 s and the same Ctrl-C
     # kills crazyflie_server, so the land services vanish almost immediately.
-    # Ctrl-C is NOT a safe abort; the operator L key is.
+    # Ctrl-C is not a safe abort; the operator L key is.
     shutdown_land_timeout_sec: 4.0
 
     # [POTREBNA PROVJERA] Conservative initial motion envelope.

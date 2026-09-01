@@ -1,14 +1,13 @@
-"""cf_auto - one-command autonomous waypoint mission on a saved layer map.
+"""cf_auto - autonomous waypoint mission on a saved layer map.
 
     ros2 launch cf_explore cf_auto.launch.py
 
 Starts Gazebo + the Crazyflie bridges, the Multi-Ranger scan merger,
-nav2_map_server + nav2_amcl on the saved layer-1 map, the cf_auto navigator
-and RViz2.  The mission blocks until the user publishes a 2D Pose Estimate.
+nav2_map_server + nav2_amcl on the first saved layer map, the cf_auto
+navigator and RViz2.  The mission blocks until a 2D Pose Estimate arrives.
 
-Deliberately absent: the ``world -> crazyflie/odom`` static transform used by
-the mapping launch files.  AMCL owns ``map -> crazyflie/odom`` here, and there
-must be exactly one publisher of it.
+Unlike the mapping launches there is no static ``world -> crazyflie/odom``
+TF: AMCL publishes ``map -> crazyflie/odom`` and is its only publisher.
 """
 
 import os
@@ -31,17 +30,16 @@ from cf_explore.paths import default_map_dir
 from cf_explore.sensor_geometry import (BASE_FRAME, BASE_TO_BODY_Z, BODY_FRAME,
                                         SENSOR_MOUNT_RPY, SENSOR_OFFSET)
 
-# nav2_map_server classifies a PGM pixel by shade = 1 - value/255.  The saved
-# layer maps store unknown as 205 (shade 0.19608); with the map's own
-# free_thresh of 0.25 that would silently become free space.  cf_auto must
-# treat unknown as untraversable, so a derived metadata file with the standard
-# ROS free threshold is generated at launch time.  The original map files are
-# never modified.
+# nav2_map_server grades a PGM pixel by shade = 1 - value/255.  Saved maps
+# store unknown as 205 (shade 0.19608), which any higher free_thresh - 0.25
+# when a yaml omits the key - would read as free space.  Unknown must stay
+# untraversable, so launch writes clamped metadata copies and leaves the
+# originals alone.
 UNKNOWN_SAFE_FREE_THRESH = 0.196
 
 
 def _range_sensor_transforms():
-    """Sensor mounting TFs exactly as defined by the Gazebo model.sdf."""
+    """Sensor mounting TFs, mirroring the Gazebo model.sdf."""
     nodes = [Node(
         package='tf2_ros', executable='static_transform_publisher',
         name='cf_auto_body_tf', output='log',
@@ -99,12 +97,11 @@ def _params_section(params_file: str) -> dict:
 
 
 def _source_layer_yamls(context) -> list:
-    """The saved layer maps to fly, newest-truth first: disk, then overrides.
+    """The saved layer maps to fly.
 
-    By default the map directory decides how many layers exist - three, four or
-    seven - and nothing in this file or in cf_auto.yaml repeats the count.
-    Explicit ``map_yaml``/``extra_layer_maps`` arguments still win, so a test
-    fixture can hand-pick a stack without touching the saved maps.
+    By default the map directory decides how many layers exist; neither this
+    file nor cf_auto.yaml repeats the count.  ``map_yaml``/``extra_layer_maps``
+    override discovery, so a test fixture can hand-pick a stack.
     """
     explicit_first = LaunchConfiguration('map_yaml').perform(context).strip()
     explicit_extra = LaunchConfiguration('extra_layer_maps').perform(context)
@@ -124,8 +121,7 @@ def _source_layer_yamls(context) -> list:
     for path in paths:
         if not os.path.isfile(path):
             raise RuntimeError(f'cf_auto: layer map not found: {path}')
-    # Hand-picked stacks still take their altitudes from each map's own
-    # sidecar, never from the layer's position in the list.
+    # Altitudes come from each map's own sidecar json, not from list order.
     return [layer_catalog.load_layer(path) for path in paths]
 
 
@@ -133,22 +129,19 @@ def _localization_nodes(context, *args, **kwargs):
     params = LaunchConfiguration('params_file').perform(context)
     layers = _source_layer_yamls(context)
 
-    # Every layer gets the same free_thresh correction up front, so a runtime
-    # LoadMap can simply point at the already-corrected copy.  Layer 1 is the
-    # map_server's start-up map; the rest are switched to in flight.
+    # Correct every layer up front so a runtime LoadMap can point straight at
+    # the copy.  The first layer is map_server's start-up map; the rest are
+    # switched to in flight.
     layer_urls = [_derive_map_yaml(layer.yaml_path) for layer in layers]
     derived_yaml = layer_urls[0]
-    # The visualizer reads the *originals* instead: only they sit next to their
-    # map_layer_N.json, which is the authoritative record of each layer's
-    # altitude.  The free_thresh correction is irrelevant to it - it draws
-    # occupied cells only, which occupied_thresh alone decides.
+    # The visualizer gets the originals: only they sit next to their
+    # map_layer_N.json, which holds each layer's altitude.  It draws occupied
+    # cells only, so free_thresh does not matter to it.
     layer_ids, layer_heights, source_yamls = layer_catalog.layer_table(layers)
 
     section = _params_section(params)
-    # The hand-measured transition points stay in the params file, but a hop
-    # onto a layer this map directory does not have has nothing to join, and
-    # cf_auto rejects such a hop outright.  Trimming here is what lets one
-    # configured table serve a 3-, 4- or 5-layer stack unchanged.
+    # Drop hops naming a layer this map directory does not have, so one
+    # configured transition table serves whatever layer stack is saved.
     transitions = layer_catalog.trim_transitions(
         [int(v) for v in section.get('transition_from_ids', [])],
         [int(v) for v in section.get('transition_to_ids', [])],
@@ -158,9 +151,8 @@ def _localization_nodes(context, *args, **kwargs):
         print('[cf_auto] dropped transitions naming layers that are not '
               'saved: ' + ', '.join(f'{a}->{b}' for a, b in transitions.dropped))
 
-    # Advisory only.  cf_auto._validate_waypoints is the authority and aborts
-    # the mission before any motion; this just names the problem at launch time
-    # instead of leaving it to a log line after takeoff.
+    # Advisory only - cf_auto._validate_waypoints aborts before any motion.
+    # This just reports the mismatch at launch instead of after takeoff.
     tolerance = float(section.get('layer_altitude_tolerance_m', 0.15))
     flat = [float(v) for v in section.get('waypoints_xyz', [])]
     for index in range(len(flat) // 3):
@@ -178,16 +170,14 @@ def _localization_nodes(context, *args, **kwargs):
         'transition_to_ids': transitions.to_ids,
         'transition_points_xy': transitions.points_xy,
     }
-    # The visualizer must never carry a second copy of the layer list, so it is
-    # handed the very table the navigator is configured with - transitions are
-    # not its business.
+    # Same layer table the navigator gets, minus the transitions it does not
+    # use, so the layer set is not described twice.
     visualizer_overrides = {'layer_map_yamls': source_yamls,
                             'layer_ids': layer_ids,
                             'layer_heights': layer_heights}
 
     return [
-        # Passive: reads the saved maps, publishes /layer_map_markers for
-        # RViz2 and nothing else.  No control authority, no input to cf_auto.
+        # Passive: publishes /layer_map_markers for RViz2, nothing feeds back.
         Node(
             package='cf_explore', executable='cf_auto_layer_visualizer',
             name='cf_auto_layer_visualizer', output='screen',
@@ -197,9 +187,8 @@ def _localization_nodes(context, *args, **kwargs):
         Node(
             package='cf_explore', executable='cf_auto',
             name='cf_auto', output='screen',
-            # layer_map_urls is derived here (temp corrected copies), so it
-            # cannot live in the static yaml - and neither can the layer table
-            # beside it, which is discovered from the very same saved maps.
+            # Derived at launch (corrected temp copies plus the discovered
+            # layer table), so none of this can live in the static yaml.
             parameters=[params, dict(layer_overrides,
                                      layer_map_urls=layer_urls)],
         ),
@@ -212,10 +201,10 @@ def _localization_nodes(context, *args, **kwargs):
             package='nav2_amcl', executable='amcl',
             name='amcl', output='screen',
             parameters=[params],
-            # No initialpose remapping: AMCL's base frame is now the real robot
-            # base, so RViz2's "2D Pose Estimate" - which publishes the ROBOT
-            # pose in map - is already exactly what AMCL wants.  cf_auto only
-            # observes /initialpose to open the mission gate.
+            # No initialpose remapping: AMCL's base frame shares x, y and
+            # yaw with the robot base, so RViz2's "2D Pose Estimate" already
+            # publishes what AMCL wants.  cf_auto only watches /initialpose to
+            # open the mission gate.
         ),
         Node(
             package='nav2_lifecycle_manager', executable='lifecycle_manager',
@@ -233,22 +222,12 @@ def generate_launch_description():
         get_package_share_directory('cf_explore'), 'config', 'cf_auto.yaml')
     default_rviz = os.path.join(
         get_package_share_directory('cf_explore'), 'config', 'cf_auto.rviz')
-    # No map list is spelled out here.  Left empty, the layer stack is
-    # discovered from map_dir at launch time, so adding or removing a saved
-    # layer needs no edit to this file or to cf_auto.yaml.  Setting map_yaml
-    # (plus optionally extra_layer_maps, comma-separated, switched to at
-    # runtime via LoadMap) overrides discovery with an explicit stack.
 
-    # World selection.  ``world`` is empty by default, and then this include is
-    # exactly what it has always been: crazyflie_simulation.launch.py brings up
-    # Gazebo on its own hardcoded crazyflie_world.sdf.  Production behaviour is
-    # therefore untouched.
-    #
-    # Passing world:=<abs path to .sdf> starts the SAME bringup with
-    # gazebo_launch:=False - so the ros_gz bridge and control_services still
-    # come up identically - and this file starts Gazebo on the chosen world
-    # instead.  That keeps the test fixture entirely project-local:
-    # ros_gz_crazyflie is a submodule and is not edited.
+    # world empty (default): crazyflie_simulation.launch.py brings up Gazebo
+    # on its own crazyflie_world.sdf.  world:=<abs .sdf> runs the same bringup
+    # with gazebo_launch:=False - bridge and control_services still come up -
+    # and Gazebo is started here on the chosen world instead, so a test
+    # fixture needs no edit to the vendored ros_gz_crazyflie.
     use_default_world = PythonExpression(
         ["'", LaunchConfiguration('world'), "' == ''"])
     crazyflie_simulation = IncludeLaunchDescription(
@@ -260,11 +239,10 @@ def generate_launch_description():
         launch_arguments={'gazebo_launch': use_default_world}.items(),
     )
 
-    # crazyflie_simulation.launch.py sets GZ_SIM_RESOURCE_PATH itself, but it
-    # does so inside its own scoped include, so the value never reaches a
-    # sibling action out here.  Without it Gazebo cannot resolve
-    # model://crazyflie and silently loads no world at all.  Setting it again
-    # is harmless for the default path, which does not use custom_world_sim.
+    # crazyflie_simulation.launch.py sets GZ_SIM_RESOURCE_PATH inside its own
+    # scoped include, so the value never reaches sibling actions here.  Without
+    # it Gazebo cannot resolve model://crazyflie and loads an empty world.
+    # Harmless on the default path, which does not use custom_world_sim.
     gz_models = os.path.join(
         get_package_share_directory('ros_gz_crazyflie_gazebo'), 'models')
     existing_resource_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
@@ -273,7 +251,6 @@ def generate_launch_description():
         value=(gz_models if not existing_resource_path
                else f'{existing_resource_path}:{gz_models}'))
 
-    # Only ever created when an explicit world was asked for.
     custom_world_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare('ros_gz_sim'),
@@ -284,12 +261,11 @@ def generate_launch_description():
         launch_arguments={'gz_args': [LaunchConfiguration('world'), ' -r']}.items(),
     )
 
-    # The merger publishes /scan, /scan_clearing and /scan_safety under
-    # hardcoded names, so two instances are separated by remapping.  Each output
-    # that is actually consumed keeps exactly one publisher.
-    #
-    # Safety instance: odom-aligned, unchanged from the validated baseline.
-    # Owns /scan_safety (cf_auto's collision guard).
+    # One merger publishes /scan, /scan_clearing and /scan_safety under fixed
+    # names, so the two instances are separated by remapping and each consumed
+    # topic keeps one publisher.
+    # Safety instance: odom-aligned, owns /scan_safety (cf_auto's collision
+    # guard).
     scan_merger_safety = Node(
         package='cf_explore', executable='range_scan_merger',
         name='range_scan_merger', output='screen',
@@ -298,17 +274,17 @@ def generate_launch_description():
                     ('/scan_clearing', '/cf_auto/scan_clearing_odom_unused')],
     )
 
-    # Localization instance: body-attached geometry. Owns /scan (AMCL's input).
-    # AMCL is a 2-D filter: whatever frame it localizes becomes planar, and the
-    # robot's altitude would be pushed into map -> odom as -z.  It therefore
-    # localizes this dedicated ground-plane frame instead of the real-altitude
-    # crazyflie/base_stabilized, which keeps its meaning untouched.
+    # AMCL is a 2-D filter: whatever frame it localizes becomes planar, so
+    # localizing the real-altitude crazyflie/base_stabilized would push the
+    # robot's height into map -> odom as -z.  It localizes this dedicated
+    # ground-plane frame instead.
     planar_frame = Node(
         package='cf_explore', executable='cf_auto_planar_frame',
         name='cf_auto_planar_frame', output='screen',
         parameters=[params_file],
     )
 
+    # Localization instance: body-attached geometry, owns /scan (AMCL's input).
     scan_merger_amcl = Node(
         package='cf_explore', executable='range_scan_merger',
         name='range_scan_merger_amcl', output='screen',
@@ -328,8 +304,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='True'),
         DeclareLaunchArgument('simulation', default_value='True'),
-        # Empty = the production crazyflie_world.sdf, unchanged.  Set to an
-        # absolute .sdf path only for the TEST-ONLY bypass fixtures.
+        # Empty = the normal crazyflie_world.sdf; an absolute .sdf path is for
+        # the bypass test fixtures only.
         DeclareLaunchArgument('world', default_value=''),
         DeclareLaunchArgument('rviz', default_value='True'),
         DeclareLaunchArgument('layer_markers', default_value='True'),

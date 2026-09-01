@@ -1,36 +1,22 @@
 #!/usr/bin/env python3
-"""Project-owned body frame with the legacy Crazyflie pitch inversion removed.
+"""Republish the Crazyflie body pose with the legacy pitch inversion removed.
 
-The Crazyflie firmware stores ``stabilizer.pitch`` already negated -- see
-``kalman_core.c``::
+The firmware stores ``stabilizer.pitch`` already negated (``kalman_core.c``:
+``.pitch = -pitch*RAD_TO_DEG``, "adjusted for the legacy CF2 body coordinate
+system").  Crazyswarm2's cflib backend undoes that in its *pose* callback
+(``crazyflie_server.py``: ``radians(-1.0 * data.get('stabilizer.pitch'))``) but
+not in its *odom* callback - and the odom callback is what broadcasts
+``<robot>/odom -> <robot>``, the transform every mapped ranger ray is projected
+through.
 
-    // Save attitude, adjusted for the legacy CF2 body coordinate system
-    state->attitude = (attitude_t){ .roll = roll*RAD_TO_DEG,
-                                    .pitch = -pitch*RAD_TO_DEG,
-                                    .yaw = yaw*RAD_TO_DEG };
+Measured hand-held nose-down ~26 deg over a floor: odom reported pitch -26 deg
+(REP-103 wants positive), the front ray pointed up (+0.44 z) while the down
+ranger read 0.65 m = 0.612 / cos(26 deg) and the front ranger swung toward the
+floor (1.29 -> 1.02 m).
 
-Crazyswarm2's cflib backend compensates for that in its *pose* callback
-(``crazyflie_server.py``: ``pitch = radians(-1.0 * data.get('stabilizer.pitch'))``)
-but **not** in its *odom* callback, which uses ``stabilizer.pitch`` raw -- and
-it is the odom callback that broadcasts ``<robot>/odom -> <robot>``, the
-transform every mapped ranger ray is projected through.
-
-Measured on hardware 2026-08-22, drone hand-held nose-down ~26 deg over a
-floor::
-
-    odom pitch      -26 deg      (REP-103 requires POSITIVE for nose-down)
-    front ray z     +0.44        (points UP while the nose points DOWN)
-    down ranger     0.65 m       = 0.612 / cos(26 deg), confirming the tilt
-    front ranger    1.29 -> 1.02 m, confirming it swung toward the floor
-
-This node republishes the same pose as a **new** frame with pitch negated, so
-sensor frames can hang off a body frame whose attitude is physically correct.
-It never republishes ``<robot>/odom -> <robot>``: that edge keeps exactly one
-publisher (Crazyswarm2), and this adds a sibling child instead, so there is no
-duplicate TF authority.
-
-Only pitch is corrected.  Roll and yaw are passed through untouched, because
-the firmware negates neither.
+This node adds a sibling child frame with pitch negated rather than
+re-broadcasting ``<robot>/odom -> <robot>``, so that edge keeps one publisher
+(Crazyswarm2).  Roll and yaw pass through; the firmware negates neither.
 """
 
 from __future__ import annotations
@@ -76,10 +62,7 @@ def quaternion_from_rpy(roll: float, pitch: float,
 
 def correct_legacy_pitch(x: float, y: float, z: float,
                          w: float) -> Quaternion:
-    """Return the same orientation with the legacy pitch inversion removed.
-
-    Roll and yaw are preserved exactly; only the pitch component changes sign.
-    """
+    """Return the same orientation with the legacy pitch inversion removed."""
     roll, pitch, yaw = quaternion_to_rpy(x, y, z, w)
     return quaternion_from_rpy(roll, -pitch, yaw)
 

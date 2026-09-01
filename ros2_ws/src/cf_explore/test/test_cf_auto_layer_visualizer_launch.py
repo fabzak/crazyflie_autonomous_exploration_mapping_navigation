@@ -1,10 +1,10 @@
 """Launch and RViz wiring for the saved-layer visualization.
 
-The node itself is covered by test_cf_auto_layer_visualizer.py.  What can still
-break silently is the wiring: the visualizer being handed the launch-time
-*derived* map copies (which have no sidecar JSON, so every layer would fall
-back to the configured height), the layer table drifting out of cf_auto's own
-parameters, or the RViz display pointing at the wrong topic or durability.
+The node itself is covered by test_cf_auto_layer_visualizer.py; what breaks
+silently here is the wiring - the derived map copies in $TMPDIR have no sidecar
+JSON, so a layer handed those falls back to the configured height - plus the
+layer table drifting out of cf_auto's parameters and the RViz display pointing
+at the wrong topic or durability.
 """
 
 import importlib.util
@@ -51,7 +51,7 @@ def resolve_parameter_dict(raw, context):
 
 
 def saved_layer_ids():
-    """The layer numbers actually on disk - never a hardcoded 1..4."""
+    """The layer numbers on disk, not a hardcoded 1..4."""
     return sorted(int(p.stem.split('_')[-1])
                   for p in MAP_DIR.glob('map_layer_*.yaml'))
 
@@ -131,7 +131,7 @@ def test_visualizer_layer_table_comes_from_the_discovered_maps(
 
 
 def test_navigator_and_visualizer_get_the_same_table(tmp_path, monkeypatch):
-    """Two nodes, one discovered table - they can never drift apart."""
+    """Two nodes, one discovered table, so they cannot drift apart."""
     module = load_launch_module()
     monkeypatch.setenv('TMPDIR', str(tmp_path))
     context = LaunchContext()
@@ -199,7 +199,7 @@ def test_params_section_survives_an_unreadable_params_file(tmp_path):
 
 
 def test_the_visualization_config_holds_no_navigation_parameters():
-    """The new section must not shadow anything cf_auto reads."""
+    """The visualizer section must not shadow anything cf_auto reads."""
     with open(CF_AUTO_YAML) as handle:
         document = yaml.safe_load(handle)
     section = document['cf_auto_layer_visualizer']['ros__parameters']
@@ -247,7 +247,7 @@ def test_rviz_display_qos_matches_the_latched_publisher():
 
 
 def test_layer_explore_visualization_is_untouched():
-    """The new display belongs to cf_auto only."""
+    """The marker display belongs to cf_auto only."""
     source = (PACKAGE / 'launch' / 'layer_explore.launch.py').read_text()
     assert 'cf_auto_layer_visualizer' not in source
     assert 'layer_map_markers' not in source

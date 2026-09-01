@@ -55,8 +55,8 @@ def test_scan_result_is_independent_of_simulated_real_time_factor():
     for real_time_factor in (0.25, 1.0, 4.0):
         scan = tracker()
         ros_elapsed = scan.requested_angle_rad / abs(scan.yaw_rate)
-        # Wall time is intentionally different and is never supplied to the
-        # tracker; scan progress and its watchdog use ROS simulation time.
+        # Wall time is different here and never reaches the tracker: scan
+        # progress and its watchdog use ROS time.
         wall_elapsed.append(ros_elapsed / real_time_factor)
         scan.observe_yaw(wrapped(scan.yaw_rate * ros_elapsed))
         results.append(scan.status(ros_elapsed))

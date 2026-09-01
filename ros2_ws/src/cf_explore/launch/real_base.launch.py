@@ -1,11 +1,10 @@
-"""Shared hardware-only Crazyswarm2, adapter, safety, and TF bringup.
+"""Shared hardware-only bringup: Crazyswarm2, adapters, safety and TF.
 
-The launch is fail-closed by default: the inventory robot is disabled,
-``dry_run`` is true, and ``autonomy_enabled`` is false.  Enabling hardware or
-autonomy requires an explicit identity attestation.  Static sensor transforms
-are emitted only after a separate extrinsics attestation; all zero defaults
-are conspicuous placeholders and are never treated as verified.  The official
-Crazyswarm robot frame remains the body/base frame.
+Fail-closed by default: the inventory robot is disabled, ``dry_run`` is true
+and ``autonomy_enabled`` is false.  Live control or autonomy needs an explicit
+identity attestation; the static sensor transforms need a separate extrinsics
+attestation, and the zero defaults never count as verified.  The Crazyswarm
+robot frame stays the body/base frame.
 """
 
 import math
@@ -30,9 +29,6 @@ from cf_explore.sensor_geometry import SENSOR_MOUNT_RPY
 
 
 SENSOR_NAMES = ('front', 'right', 'back', 'left', 'up', 'down')
-# Every sensor frame's +X axis is its single ToF ray, so these rotations are
-# what actually aim each ranger.  They are the same physical mounting the
-# simulation uses; a wrong or placeholder rotation silently rotates the map.
 EXTRINSIC_RPY_TOLERANCE_RAD = 1.0e-3
 IDENTITY_PLACEHOLDERS = ('__ROBOT_NAME__', '__RADIO_URI__')
 DEFAULT_VECTOR_PLACEHOLDER = '0,0,0'
@@ -105,11 +101,10 @@ def prepare_crazyflies_yaml(template_path: str, robot_name: str,
         raise RuntimeError(
             'real Crazyswarm inventory template must be disabled by default')
 
-    # The order of these log variables is what actually determines which
-    # physical sensor lands in which LaserScan.  real_sensor_adapter can only
-    # check its own parameter against its own constant, so a yaml-only edit
-    # here would silently mislabel sensors and mirror the map with no error
-    # anywhere.  Validate the wire order at launch instead.
+    # This var order decides which physical sensor lands in which LaserScan.
+    # real_sensor_adapter can only check its own parameter against its own
+    # constant, so a yaml-only edit here would mislabel sensors and mirror the
+    # map.  Validate the wire order at launch.
     logging = ((document.get('all') or {}).get('firmware_logging') or {})
     custom = (logging.get('custom_topics') or {}).get('range_raw') or {}
     wire_order = tuple(custom.get('vars') or ())
@@ -154,10 +149,10 @@ def validate_extrinsics_gate(extrinsics, autonomy_enabled: bool = True,
                              require_translations: bool = True) -> None:
     """Check every sensor rotation independently before live autonomy.
 
-    Each ranger is validated on its own against the physical mounting, so a
-    single supplied sensor can never vouch for the others.  ``front`` is
-    legitimately an identity rotation, which is why the test is agreement
-    with the expected mounting rather than "not a placeholder".
+    Each ranger is checked on its own against the physical mounting, so one
+    supplied sensor cannot vouch for the others.  ``front`` is legitimately an
+    identity rotation, which is why the test is agreement with the mounting
+    rather than "not a placeholder".
     """
     if not autonomy_enabled:
         return
@@ -169,12 +164,13 @@ def validate_extrinsics_gate(extrinsics, autonomy_enabled: bool = True,
             continue
         xyz, rpy = entry
         if require_translations and tuple(xyz) == (0.0, 0.0, 0.0):
-            # A translation is never validated against a reference the way a
-            # rotation is, so the only check available is that the operator
-            # actually supplied one.  The placeholder must not pass silently.
+            # No reference to compare a translation against, so the only
+            # check is that the operator supplied one.
             problems.append(
                 f'{sensor}_xyz is the untouched placeholder 0,0,0; supply the '
                 'measured mount offset (the simulated deck sits at z=0.02)')
+        # Each sensor frame's +X axis is its ToF ray, so these rotations are
+        # what aim the rangers; a wrong or placeholder rotation turns the map.
         expected = SENSOR_MOUNT_RPY[sensor]
         if any(_angle_error(actual, want) > EXTRINSIC_RPY_TOLERANCE_RAD
                for actual, want in zip(rpy, expected)):
@@ -232,10 +228,9 @@ def _base_actions(context, *args, **kwargs):
                     LaunchConfiguration(f'{sensor}_rpy').perform(context),
                     f'{sensor}_rpy'),
             )
-        # Validate whenever the transforms are actually published, not only
-        # before autonomy.  A sensor-check session that emits six identity
-        # rotations produces RViz and rosbag evidence that is wrong in a way
-        # that looks entirely plausible.
+        # Validate whenever the transforms are published, not only before
+        # autonomy: six identity rotations give plausible-looking but wrong
+        # RViz and rosbag evidence.
         validate_extrinsics_gate(extrinsics, True)
 
     inventory = prepare_crazyflies_yaml(
@@ -257,11 +252,10 @@ def _base_actions(context, *args, **kwargs):
     )
 
     # Crazyswarm2's odom callback publishes <robot>/odom -> <robot> with the
-    # firmware's legacy pitch inversion left in (measured on hardware: nose
-    # down 26 deg gave odom pitch -26 deg and projected the front ray UPWARD).
-    # real_body_frame republishes the same pose as a sibling child with pitch
-    # corrected, and the ranger frames hang off that instead.  <robot> keeps
-    # exactly one publisher, so there is no duplicate TF authority.
+    # firmware's legacy pitch inversion (measured: nose down 26 deg gave odom
+    # pitch -26 deg and projected the front ray upward).  real_body_frame
+    # republishes the same pose as a sibling with pitch corrected and the
+    # ranger frames hang off that, so <robot> keeps a single publisher.
     body_frame = f'{robot}/base_corrected' if correct_body_pitch else robot
     sensor_frames = {
         f'frames.{sensor}': f'{robot}/range_{sensor}'
@@ -304,10 +298,9 @@ def _base_actions(context, *args, **kwargs):
         }],
     )
 
-    # The operator supervisor is the only path from a human keypress to an
-    # arm, start, land or emergency request, and its authorization heartbeat
-    # is what releases both the algorithm start gate and the control adapter.
-    # It runs on every real launch, including dry runs, so the keyboard
+    # The only path from a human keypress to an arm, start, land or emergency
+    # request; its authorization heartbeat releases both the algorithm start
+    # gate and the control adapter.  It runs on dry runs too, so the keyboard
     # interface can be rehearsed without hardware motion.
     operator_control = Node(
         package='cf_explore', executable='real_operator_control',

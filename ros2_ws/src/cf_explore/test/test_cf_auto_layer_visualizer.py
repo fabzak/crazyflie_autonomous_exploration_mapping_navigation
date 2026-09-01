@@ -125,11 +125,9 @@ def test_multiple_layers_load_independently(tmp_path):
 
 
 def test_configured_layer_id_wins_over_sidecar_layer_field(tmp_path):
-    """map_layer_4.json really does record "layer": 3 in this repository.
-
-    Identity has to come from cf_auto's configured, position-indexed layer
-    table, or two layers would collide on one marker id.
-    """
+    """map_layer_4.json records "layer": 3 in this repo, so identity must come
+    from cf_auto's position-indexed layer table or two layers collide on one
+    marker id."""
     path = write_map(tmp_path, 4, single_occupied(8, 6, 0, 0), z_height=2.0,
                      json_payload={'layer': 3, 'z_height': 2.0})
     layer = load_layer_map(path, layer_id=4)
@@ -158,19 +156,16 @@ def test_missing_altitude_everywhere_is_an_error(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_pgm_row_zero_maps_to_the_highest_y(tmp_path):
-    """The mirror detector.
-
-    layer_explore writes the grid as ``pixels[::-1, :]``, so the first PGM row
-    is the *top* of the map.  Reading it as the bottom would flip every layer
-    about the map's horizontal axis - a failure that still looks plausible.
-    """
+    """layer_explore writes the grid as ``pixels[::-1, :]``, so PGM row 0 is
+    the top of the map.  Reading it as the bottom flips every layer about the
+    horizontal axis and still looks plausible."""
     height, width = 8, 6
     path = write_map(tmp_path, 1, single_occupied(height, width, 0, 0))
     centers = occupied_cell_centers(load_layer_map(path, 1))
     assert len(centers) == 1
     top_y = ORIGIN[1] + (height - 1 + 0.5) * RESOLUTION
     assert centers[0][1] == pytest.approx(top_y)
-    # ... and emphatically not the bottom row.
+    # ... and not the bottom row.
     assert centers[0][1] != pytest.approx(ORIGIN[1] + 0.5 * RESOLUTION)
 
 
@@ -206,12 +201,9 @@ def test_cell_centre_uses_origin_and_resolution(tmp_path):
 
 
 def test_round_trip_against_the_projects_own_map_writer(tmp_path):
-    """End-to-end proof, using layer_explore's writer as the reference.
-
-    Marking one cell occupied at a known world point and reading the saved map
-    back must return that same point.  Any row flip, column flip or half-cell
-    offset breaks this.
-    """
+    """Round trip through layer_explore's own writer: a cell marked at a known
+    world point must read back at that point.  Catches row flips, column flips
+    and half-cell offsets."""
     grid = GridMap(40, 0.05)
     target_row, target_col = 12, 27
     truth_x, truth_y = grid.cell_to_world(target_row, target_col)
@@ -525,7 +517,7 @@ def test_restyling_is_idempotent(tmp_path):
 
 
 def test_highlighting_never_moves_the_geometry(tmp_path):
-    """Layers must stay at their true altitudes; emphasis is appearance only."""
+    """Layers stay at their true altitudes; highlighting is appearance only."""
     layers = three_layers(tmp_path)
     array = build_marker_array(layers, 'map', STAMP)
     before = {m.id: [(p.x, p.y, p.z) for p in m.points]
@@ -726,14 +718,11 @@ def test_a_bad_layer_never_yields_silently_wrong_geometry(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_the_real_saved_layers_load_and_agree_with_cf_autos_layer_table():
-    """The shipped maps in ros2_ws/map are what cf_auto actually flies.
+    """The shipped maps in ros2_ws/map, loaded the way cf_auto loads them.
 
-    Nothing here states how many layers there should be or how big they are:
-    the map directory is the authority on both, exactly as cf_auto now treats
-    it.  What is asserted is that every discovered layer really loads, that its
-    altitude is the one recorded in its own sidecar, and that all layers share
-    one grid - which is the precondition layer_route._require_aligned needs
-    before a cell index can mean the same thing on every layer.
+    The layer count and geometry come from the directory, never from this file.
+    All layers must share one grid: that is layer_route._require_aligned's
+    precondition for a cell index meaning the same place on every layer.
     """
     from pathlib import Path
 

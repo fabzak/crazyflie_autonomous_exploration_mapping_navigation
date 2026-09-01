@@ -1,15 +1,10 @@
 """The real profiles must impose no artificial mission bound.
 
-``layer_explore_real`` and ``cf_auto_real`` were once configured for staged
-supervised flights: exactly one map layer, and a hover after SCAN.  Those
-bounds are gone.  These tests pin the *absence* of every real-only mission
-limit, so a later edit cannot quietly reintroduce one.
-
-The optional generic parameters themselves (``max_layers``,
-``halt_after_state``, ``halt_after_layer``) are deliberately still implemented
-and still covered by test_layer_explore_start_gate.py and
-test_layer1_save_no_ascend.py.  What must not come back is a real *config*
-that switches them on.  Nothing here starts a radio, a node or a ROS graph.
+These pin the absence of every real-only mission limit.  The generic
+parameters (``max_layers``, ``halt_after_state``, ``halt_after_layer``) still
+exist and are covered by test_layer_explore_start_gate.py and
+test_layer1_save_no_ascend.py; what must not come back is a real config that
+switches them on.  No ROS graph is started.
 """
 
 import importlib.util
@@ -66,7 +61,7 @@ def test_real_mapping_has_no_forced_layer_count():
 
 
 def test_real_mapping_does_not_use_the_ceiling_clearance_trick():
-    """A clearance larger than the room once forced a single layer."""
+    """A clearance larger than the room collapses the stack to one layer."""
     assert 'layer_ceiling_clearance_m' not in layer_real()
 
 
@@ -80,8 +75,8 @@ def test_real_mapping_never_lists_layer_altitudes():
 def test_the_configured_real_room_yields_more_than_one_layer():
     """The real spacing and the default clearance must not collapse to one.
 
-    This is the behavioural counterpart to the three absence tests above: it
-    runs the shipped derivation with the real profile's own numbers.
+    Runs the shipped derivation with the real profile's own numbers instead of
+    asserting an absence.
     """
     settings = layer_real()
     spacing = float(settings['layer_spacing_m'])
@@ -107,8 +102,8 @@ def test_layer_count_follows_the_room_not_the_config():
 def test_select_and_navigate_continuation_is_not_diverted():
     """With no halt configured, the SCAN -> SELECT edge must be taken.
 
-    Mirrors the shipped latch in ``_set_state`` rather than re-implementing
-    it: an empty ``halt_after_state`` can never match a state name.
+    Reads the shipped latch in ``_set_state`` rather than re-implementing it:
+    an empty ``halt_after_state`` cannot match a state name.
     """
     source = (PACKAGE / 'cf_explore' / 'layer_explore.py').read_text()
     assert 'if (self.halt_after_state' in source
@@ -118,7 +113,7 @@ def test_select_and_navigate_continuation_is_not_diverted():
 
 
 def test_optional_bounds_remain_implemented():
-    """Removing the real bound must not remove the generic feature."""
+    """No real config uses these, but the generic feature stays available."""
     source = (PACKAGE / 'cf_explore' / 'layer_explore.py').read_text()
     assert "'max_layers', 0" in source
     assert "'halt_after_layer', 0" in source
@@ -247,14 +242,14 @@ def test_real_navigation_runs_until_every_waypoint_is_done():
 
 
 def test_operator_keys_are_still_alt_g_l_space():
-    """Removing mission bounds must not have touched the safety interface."""
+    """Mission scope is separate from the operator safety interface."""
     source = (PACKAGE / 'cf_explore' / 'real_operator_control.py').read_text()
     for token in ('alt_l', 'alt_r', "'g'", "'l'", 'space'):
         assert token in source.lower()
 
 
 def test_real_profiles_keep_their_freshness_fail_safes():
-    """Mission scope changed; the low-level protections did not."""
+    """An unbounded mission still runs behind every freshness fail-safe."""
     layer = layer_real()
     auto = auto_real()
     assert float(layer['freshness_timeout_sec']) > 0.0

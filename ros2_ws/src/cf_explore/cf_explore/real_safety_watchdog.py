@@ -5,9 +5,9 @@ motion permit which the real control adapter must require before forwarding a
 requested command to Crazyswarm2.  Silence, an explicit false permit, or a
 latched fault therefore all stop command forwarding in the downstream adapter.
 
-The decision logic is deliberately ROS-independent.  ``SafetyEvaluator`` uses
-caller-provided monotonic receive times and ROS source timestamps, which makes
-freshness and latch behavior deterministic in unit tests.
+``SafetyEvaluator`` is ROS-free: it takes caller-supplied monotonic receive
+times and ROS source stamps, so freshness and latch behaviour are
+deterministic in unit tests.
 """
 
 from __future__ import annotations
@@ -42,31 +42,20 @@ SIGNAL_ORDER = (
     'status',
 )
 RANGE_SIGNALS = ('front', 'right', 'back', 'left', 'up', 'down')
-#: Blockers that are a normal, expected condition for a grounded vehicle and
-#: must therefore not latch a permanent fault.  A disarmed Crazyflie sitting
-#: on the ground reports CAN_FLY clear because that is exactly the state it
-#: should be in.  Observed 2026-08-22: arming, disarming on the ground and
-#: re-arming latched `supervisor:cannot_fly` forever, so the permit stayed
-#: false for the rest of the launch and the aircraft silently refused to fly.
-#: While IS_FLYING is set this is still latched, which is what protects an
-#: airborne vehicle that loses CAN_FLY.
+#: Blockers that are normal for a grounded vehicle and must not latch a
+#: permanent fault: a disarmed Crazyflie on the ground reports CAN_FLY clear.
+#: Latching it means that arming, ground-disarming and re-arming pins
+#: `supervisor:cannot_fly` for the rest of the launch.  Still latched while
+#: IS_FLYING is set, which protects an airborne vehicle that loses CAN_FLY.
 GROUNDED_RECOVERABLE_BLOCKERS = ('supervisor:cannot_fly',)
-#: Command-stream blockers that are normal before a mission starts and must
-#: not latch while the aircraft physically cannot be moving.  Between launch
-#: and the operator's G there is no continuous setpoint to expect: cf_auto
-#: publishes its zero-command heartbeat from a single-threaded executor, so a
-#: long map/AMCL callback alone can outlast command_timeout_sec.  Observed
-#: 2026-08-28 on hardware: the permit went healthy, then a pre-mission gap
-#: latched `stale:command:receive_time` before takeoff and the whole launch
-#: was unusable.
-#:
-#: These are recoverable ONLY while the supervisor reports neither IS_ARMED
-#: nor IS_FLYING - see _blocker_is_recoverable.  Disarmed and grounded, the
-#: motors cannot spin, so a missing setpoint cannot cause motion.  From the
-#: instant the operator arms, command loss latches again exactly as before,
-#: which closes the takeoff window: IS_ARMED is set by the operator's Left Alt
-#: BEFORE any climb, so there is no interval in which the aircraft could be
-#: leaving the ground while a command gap is still treated as recoverable.
+#: Command-stream blockers that are normal before a mission starts.  There is
+#: no continuous setpoint between launch and the operator's G, and cf_auto
+#: publishes its zero-command heartbeat from a single-threaded executor, so
+#: one long map/AMCL callback can outlast command_timeout_sec and latch a
+#: fault before takeoff.  Recoverable only while the supervisor reports
+#: neither IS_ARMED nor IS_FLYING (see _blocker_is_recoverable): disarmed and
+#: grounded, the motors cannot spin.  Left Alt sets IS_ARMED before any climb,
+#: so no command gap is treated as recoverable in the air.
 GROUNDED_RECOVERABLE_COMMAND_BLOCKERS = (
     'missing:command',
     'stale:command:receive_time',
@@ -78,10 +67,9 @@ VERTICAL_SIGNALS = ('up', 'down')
 # evaluator can be used without constructing ROS messages.
 SUPERVISOR_CAN_FLY = 8
 SUPERVISOR_IS_FLYING = 16
-#: crazyflie_interfaces/msg/Status SUPERVISOR_INFO_IS_ARMED.  Motors cannot
-#: spin while this is clear, and only the operator's Left Alt can set it -
-#: autonomy may never arm - so it is the earliest trustworthy "this aircraft
-#: could move now" signal, strictly earlier than IS_FLYING.
+#: Status SUPERVISOR_INFO_IS_ARMED.  Motors cannot spin while it is clear and
+#: only the operator sets it, never autonomy, so it is the earliest
+#: trustworthy "this aircraft could move" signal - earlier than IS_FLYING.
 SUPERVISOR_IS_ARMED = 2
 SUPERVISOR_IS_TUMBLED = 32
 SUPERVISOR_IS_LOCKED = 64
@@ -103,9 +91,9 @@ VALID_PM_STATES = {
 class WatchdogConfig:
     """Freshness and optional telemetry limits for ``SafetyEvaluator``.
 
-    Freshness limits are required and must be supplied by the real config.
-    Optional battery, RSSI and link limits default to ``None``: this watchdog
-    must not silently turn example values into real-hardware safety limits.
+    Freshness limits must come from the real config.  Battery, RSSI and link
+    limits default to ``None`` so unverified example values never become
+    hardware safety limits.
     """
 
     command_timeout_sec: float
@@ -203,13 +191,11 @@ class _Observation:
 class SafetyEvaluator:
     """Pure fail-closed evaluator with a one-way fault latch.
 
-    Missing inputs during graph discovery keep the permit false but do not
-    immediately latch.  Once one completely healthy evaluation has issued a
-    permit, any missing, stale, future-dated, invalid or configured
-    out-of-limit critical input latches the first reason.  Hard faults
-    (malformed data,
-    supervisor lock/tumble, firmware low-power/shutdown, invalid configuration)
-    latch even before the first healthy evaluation.
+    Missing inputs during graph discovery hold the permit false without
+    latching.  After the first healthy evaluation, any missing, stale,
+    future-dated, invalid or out-of-limit input latches its reason.  Hard
+    faults - malformed data, supervisor lock/tumble, firmware low-power or
+    shutdown, invalid config - latch even before that.
     """
 
     def __init__(self, config: WatchdogConfig):
@@ -315,18 +301,12 @@ class SafetyEvaluator:
     def _blocker_is_recoverable(self, blocker: str) -> bool:
         """May this blocker clear again instead of latching a fault?
 
-        Recoverability is decided per blocker and only from firmware
-        supervisor state, never from timing.  Every blocker in an evaluation
-        must be recoverable for the evaluation to avoid the latch, so a single
-        genuinely unsafe input still latches alongside a benign one.
-
-        A stale or absent command is normal before a mission starts, but only
-        while the aircraft cannot move: grounded AND disarmed.  Requiring both
-        bits clear is deliberate belt-and-braces - IS_ARMED alone already
-        precedes any climb, and IS_FLYING alone would leave the arm-to-liftoff
-        window recoverable.  Losing telemetry does not silently widen this:
-        `stale:status:*` and `missing:status` are not recoverable, so if the
-        flight state cannot be trusted the evaluation latches as before.
+        Decided per blocker from supervisor state only, never from timing, and
+        every blocker in an evaluation must be recoverable for the evaluation
+        to escape the latch.  A missing command is recoverable only while the
+        aircraft is both disarmed and grounded, which covers the
+        arm-to-liftoff window.  ``stale:status:*`` and ``missing:status`` are
+        not recoverable, so an untrustworthy flight state still latches.
         """
         if blocker in GROUNDED_RECOVERABLE_BLOCKERS:
             return not self._is_flying
@@ -383,9 +363,9 @@ class SafetyEvaluator:
             if observation.blocker:
                 blockers.append(observation.blocker)
 
-        # Flight-state-aware floor requirement.  A grounded vehicle may report
-        # a near-zero or absent down reading indefinitely; an airborne one may
-        # not, because the down channel is what proves altitude clearance.
+        # A grounded vehicle may report no down reading indefinitely; an
+        # airborne one may not - the down channel is what proves altitude
+        # clearance.
         if (self._is_flying and self._down_lost_since is not None
                 and (now_received_sec - self._down_lost_since)
                 > self.config.airborne_down_loss_timeout_sec):
@@ -443,12 +423,10 @@ def _valid_range(msg: LaserScan) -> bool:
 def _no_measurement(msg: LaserScan) -> bool:
     """True when no bin of this scan carries a measurement.
 
-    NaN is the adapter's "the firmware could not measure this channel"
-    value.  A Multi-ranger legitimately reports it whenever nothing is
-    inside its cone, so it is a normal operating state and must never be
-    treated as malformed data.  Absence of a measurement matters only where
-    the measurement is actually required - see the airborne ``down`` rule in
-    :meth:`SafetyEvaluator.evaluate`.
+    NaN means "the firmware could not measure this channel".  A Multi-ranger
+    reports it whenever nothing is inside its cone, so it is a normal state,
+    not malformed data.  It only blocks where the measurement is required -
+    see the airborne ``down`` rule in :meth:`SafetyEvaluator.evaluate`.
     """
     return all(math.isnan(value) for value in msg.ranges)
 
@@ -556,10 +534,9 @@ class RealSafetyWatchdog(Node):
         self.create_subscription(
             Status, f'/{robot}/status', self._on_status, status_qos)
 
-        # These protocol durations are the standard safety-heartbeat profile,
-        # not battery/radio/vehicle thresholds.  Consumers must request
-        # compatible QoS and independently fail closed when this publisher
-        # dies.
+        # QoS deadline/lifespan, not vehicle thresholds.  Consumers need
+        # compatible QoS and must still fail closed on their own when this
+        # publisher dies.
         permit_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,

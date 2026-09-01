@@ -2,10 +2,8 @@
 
 Pure and ROS-free so it can be unit tested without a graph or hardware.
 
-Why this module exists
-----------------------
 The downward ToF is not an independent sensor from ``odom.z``: the Crazyflie
-firmware feeds it straight into the Kalman filter's *absolute* Z state.
+firmware feeds it straight into the Kalman filter's absolute Z state.
 
     zranger2.c:112-115   accepts any return under 5 m, stdDev ~0.0025 m at 0.2 m
     range.c              rangeEnqueueDownRangeInEstimator -> estimatorEnqueueTOF
@@ -14,39 +12,24 @@ firmware feeds it straight into the Kalman filter's *absolute* Z state.
                          h[KC_STATE_Z]     = 1 / cos(angle)
                          scalarUpdate(H, measured - predicted, stdDev)
 
-``mm_tof.c`` carries no ground-height state and no discontinuity compensation,
-so the model asserts "the surface below me is the z=0 datum".  The barometer,
-which would have been the one terrain-independent height reference, is compiled
-out (``estimator_kalman.c:100`` leaves ``KALMAN_USE_BARO_UPDATE`` commented).
+``mm_tof.c`` has no ground-height state, and the barometer -- the one
+terrain-independent height reference -- is compiled out
+(``estimator_kalman.c:100`` leaves ``KALMAN_USE_BARO_UPDATE`` commented), so the
+model asserts "the surface below me is the z=0 datum" and holding ``odom.z``
+constant holds height above the current surface: terrain following.  Measured
+closed-loop against the control adapter and the firmware equations, a 0.20 m
+obstacle drove true altitude from 0.400 m to 0.597 m, then back down.
 
-The consequence is that when a raised surface passes underneath, the estimator
-pulls its own Z down toward the new ground distance, and *anything* that holds
-``odom.z`` constant is therefore holding height-above-the-current-surface
-constant -- terrain following.  Measured closed-loop against the real control
-adapter and the firmware equations: a 0.20 m obstacle drove true altitude from
-0.400 m to 0.597 m, then back down on the far side.
+With ``Z`` the true altitude, ``s`` the surface height under the aircraft and
+``d`` the measured ground distance, ``d = Z - s`` with no filter lag, so
+``Z = d + s``.  Continuity pins ``s``: the aircraft cannot change altitude
+instantaneously, so any step in ``d`` bigger than our own commanded vertical
+motion is terrain and is absorbed into ``s``; symmetric crossings cancel, so
+repeated obstacles introduce no bias.  Built on ``d`` and not ``odom.z``, which
+lags a step by ~0.4 s at the firmware's own noise parameters while the offset
+moves instantly -- a wrong-direction excursion at every crossing.
 
-The reconstruction
-------------------
-With ``Z`` the true altitude, ``s`` the height of the surface currently under
-the aircraft and ``d`` the measured ground distance::
-
-    d = Z - s          exactly, and with no filter lag
-
-so ``Z = d + s``.  ``s`` is not a free accumulator: it is pinned by the fact
-that a real aircraft cannot change altitude instantaneously, so ``Z = d + s``
-must be *continuous*.  Every step in ``d`` larger than our own commanded
-vertical motion could produce in one sample is therefore a terrain step, and is
-absorbed into ``s``.  Symmetric crossings cancel exactly, so repeated obstacles
-introduce no bias.
-
-This is deliberately built on ``d`` rather than on ``odom.z``.  ``odom.z`` lags
-a terrain step by the estimator's time constant (~0.4 s at the firmware's own
-noise parameters) while the offset moves instantly, and that mismatch produces
-a wrong-direction excursion at every crossing.  ``d`` steps at exactly the same
-instant as the terrain, so the reconstruction is transient-free.
-
-Known limitation: a *gradual* ramp produces per-sample residuals below the step
+Known limitation: a gradual ramp produces per-sample residuals below the step
 threshold and is followed rather than compensated.  Steps -- boxes, shelves,
 pallets -- are what this module is for.
 """
@@ -76,7 +59,7 @@ def _median(values: List[float]) -> float:
 class _Transition:
     """One in-progress disturbance of the ground distance.
 
-    ``reference`` is the settled level from *before* the disturbance began,
+    ``reference`` is the settled level from before the disturbance began,
     ``own_motion`` the aircraft's own vertical travel since then, and
     ``samples`` the newest levels from which the settled end is taken.
     """
@@ -140,9 +123,9 @@ class LayerAltitudeTracker:
     """Reconstruct terrain-independent altitude from the ground distance.
 
     Feed :meth:`update` one attitude-corrected distance-to-surface-below per
-    sensor sample.  :attr:`world_z` is then altitude above the *mission floor
-    datum* -- the surface the aircraft started over -- regardless of what
-    happens to be underneath it now.
+    sensor sample.  :attr:`world_z` is then altitude above the mission floor
+    datum -- the surface the aircraft started over -- regardless of what happens
+    to be underneath it now.
     """
 
     def __init__(self, settings: Optional[LayerAltitudeSettings] = None):
@@ -152,8 +135,8 @@ class LayerAltitudeTracker:
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def reset(self) -> None:
-        """Return to the mission floor datum.  A new mission must never
-        inherit a previous mission's terrain offset."""
+        """Return to the mission floor datum; a new mission must not inherit
+        the previous one's terrain offset."""
         self.terrain_offset = 0.0
         self._distance: Optional[float] = None
         self._world_z: Optional[float] = None
@@ -177,19 +160,17 @@ class LayerAltitudeTracker:
         terrain falling away.
 
         ``freeze_terrain`` asserts that the aircraft is not translating, so
-        the surface underneath it cannot have changed.  During a deliberate
-        vertical transition -- takeoff, a layer ascent, a descent -- the
-        ground distance moves a long way for reasons that have nothing to do
-        with terrain, and committing a step there would corrupt the datum.
-        The reported altitude still tracks the climb; only the terrain
-        estimate is held.
+        the surface underneath it cannot have changed.  During takeoff, a
+        layer ascent or a descent the ground distance moves a long way for
+        reasons unrelated to terrain, and committing a step there would
+        corrupt the datum.  The reported altitude still tracks the climb;
+        only the terrain estimate is held.
         """
         if self._lost:
-            # Latched on purpose.  Once the reconstruction has lost the datum
-            # there is nothing in the system that can recover it -- the ToF is
-            # the only absolute height reference and it is what went wrong --
-            # so authority stays with the downstream fail-safe hold until a
-            # new mission re-datums us.
+            # Latched: the ToF is the only absolute height reference and it is
+            # what failed, so nothing here can recover the datum.  Authority
+            # stays with the downstream fail-safe hold until a new mission
+            # re-datums us.
             return LOST
 
         if not valid or not math.isfinite(distance) or distance < 0.0:
@@ -266,8 +247,8 @@ class LayerAltitudeTracker:
             [0.0] * len(transition.samples),
             maxlen=self._settled_expected.maxlen)
         if abs(change) <= self.settings.step_threshold_m:
-            # Too small to be terrain worth compensating: it was ranger noise
-            # or our own settling, so the datum is left exactly where it was.
+            # Too small to be terrain worth compensating: ranger noise or our
+            # own settling, so the datum is left where it was.
             self._world_z = distance + self.terrain_offset
             return STEADY
 
@@ -310,9 +291,8 @@ class LayerAltitudeTracker:
         if error is None:
             return None
         settings = self.settings
-        # An exact 0.0 is a legitimate command here.  Ownership is asserted
-        # explicitly on the Z-authority heartbeat, not by keeping the
-        # magnitude above some downstream controller's epsilon.
+        # 0.0 is a legitimate command: ownership is asserted on the Z-authority
+        # heartbeat, not by keeping the magnitude above a downstream epsilon.
         return max(-settings.max_hold_speed_mps,
                    min(settings.max_hold_speed_mps,
                        settings.hold_kp * error))

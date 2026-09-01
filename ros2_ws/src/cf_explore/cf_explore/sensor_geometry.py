@@ -1,10 +1,9 @@
 """Shared timestamped Multi-ranger geometry for mapping and navigation.
 
-The functions in this module deliberately have no ROS node dependency.  Both
-``layer_explore`` and ``range_scan_merger`` use the same scan representation,
-freshness store, floor/ceiling estimator and 3-D ray projection.  ROS nodes are
-responsible only for message subscription, timestamped TF lookup, diagnostics
-and consuming the projected endpoints.
+No ROS dependency, so ``layer_explore`` and ``range_scan_merger`` share one
+scan representation, freshness store, floor/ceiling estimator and 3-D ray
+projection.  The nodes do only subscription, timestamped TF lookup and
+diagnostics.
 """
 
 from __future__ import annotations
@@ -205,13 +204,12 @@ def scan_time_state(
         future_tolerance: float, queue_timeout: float, *,
         reception_now_ns: Optional[int] = None,
         enforce_reception_timeout: bool = True) -> str:
-    """Classify one scan using separate source and callback clock domains.
+    """Classify one scan across two clock domains.
 
-    ``now_ns`` and ``stamp_ns`` are ROS time.  ``received_ns`` and
-    ``reception_now_ns`` are steady time when supplied by a node.  Simulation
-    callers disable the steady timeout because ROS time can advance slower
-    than wall time; source-stamp age then remains the fail-closed liveness
-    check while the simulator is advancing.
+    ``now_ns``/``stamp_ns`` are ROS time; ``received_ns``/``reception_now_ns``
+    are steady time.  Simulation disables the steady timeout because ROS time
+    can lag wall time, leaving source-stamp age as the fail-closed liveness
+    check.
     """
     if received_ns is None or stamp_ns <= 0:
         return 'invalid'
@@ -578,10 +576,10 @@ def project_horizontal_scan(
         record: ScanRecord, transform: Optional[Transform3D],
         floor: float, ceiling: float,
         settings: ProjectionSettings) -> List[ProjectedRay]:
-    """Project one horizontal sensor scan into safely capped stable-frame rays.
+    """Project one horizontal sensor scan into capped stable-frame rays.
 
-    A missing transform is deliberately represented by an empty result so the
-    caller can omit that sensor without affecting other fresh sensors.
+    A missing transform gives an empty list, so the caller drops just that
+    sensor.
     """
     if transform is None or record.sensor not in HORIZONTAL_SENSORS:
         return []
@@ -690,11 +688,9 @@ def is_self_return(
             and abs(local[2]) <= half_z)
 
 
-# A ray only measures horizontal collision clearance when it actually travels
-# horizontally in the stable frame.  The Multi-Ranger cone is 27 deg wide, so a
-# level sensor never emits a ray steeper than 13.5 deg; 20 deg keeps the whole
-# cone plus attitude margin while rejecting rays that are clearly looking at
-# overhead or underfoot structure.
+# A level 27 deg cone never emits a ray steeper than 13.5 deg, so 20 deg keeps
+# the whole cone plus attitude margin while still rejecting rays that are
+# looking at the ceiling or the floor.
 DEFAULT_SAFETY_MAX_ELEVATION = math.radians(20.0)
 
 
@@ -702,10 +698,10 @@ def ray_is_near_horizontal(
         origin: Vec3, point: Vec3, max_elevation: float) -> bool:
     """True when a stable-frame ray is shallow enough to report side clearance.
 
-    With the vehicle pitched, a nominally horizontal sensor can point steeply up
-    or down.  A short return then lands inside the horizontal safety band even
-    though it measured a ceiling or the floor, so the endpoint height test alone
-    cannot separate the two — the ray direction has to be checked as well.
+    Pitched, a nominally horizontal sensor can point steeply up or down; a
+    short return then lands inside the vertical safety band although it
+    measured the ceiling or the floor, which the endpoint-height test alone
+    cannot catch.
     """
     dx = point[0] - origin[0]
     dy = point[1] - origin[1]
@@ -733,13 +729,11 @@ def horizontal_safety_obstacles(
         vertical_half_band: float,
         self_filter: SelfFilterSettings,
         max_elevation: float = DEFAULT_SAFETY_MAX_ELEVATION) -> List[Vec3]:
-    """Geometry-valid obstacle vectors from the body origin in stable frame.
+    """Obstacle vectors from the body origin, in the stable frame.
 
-    This is the shared source for both scalar emergency distance reporting and
-    directional close-obstacle recovery.  Plane, no-return, self, out-of-band
-    and steeply inclined endpoints have already been excluded when a vector is
-    returned.  Steep rays are dropped here only — they stay available to 3-D
-    observation and 2-D mapping, which read the projected rays directly.
+    Plane, no-return, self, out-of-band and steeply inclined endpoints are
+    already excluded.  Steep rays are dropped here only: mapping and 3-D
+    observation read the projected rays directly and still see them.
     """
     body_origin = body_transform[0]
     obstacles: List[Vec3] = []
@@ -838,25 +832,15 @@ def overhead_hit_points(
             accepted.append(point)
         return accepted
 
-    # Single-ray cone fallback: a real Multi-ranger reports one distance for a
-    # whole 27 deg cone and never says which direction inside it produced the
-    # return.  The climb cylinder therefore cannot be applied per sample here
-    # the way it is for exact rays above.  Doing so was a hard blocker: the
-    # outermost cone sample sits `value * sin(fov/2)` off axis, which exceeds
-    # a realistic climb radius for anything beyond `radius / sin(fov/2)`
-    # (0.77 m at 0.18 m and 27 deg), so every real ceiling was rejected,
-    # upward_headroom() stayed infinite and TAKEOFF could never proceed.
-    #
-    # The directional uncertainty is instead resolved conservatively, which is
-    # what this branch already did with `min(...)`: a ToF returns the NEAREST
-    # surface anywhere in the cone, so `value` is a lower bound on the
-    # distance to anything in it, including whatever is directly overhead.
-    # Taking the lowest sampled z and reporting it in the body column makes
-    # the reported clearance a strict lower bound - it can understate the
-    # real headroom, never overstate it.
-    #
-    # `radius` still gates the exact-ray branch above, where each ray's
-    # direction is genuinely known.
+    # Single-ray fallback: a real Multi-ranger reports one distance for the
+    # whole 27 deg cone and cannot say which direction produced it, so the
+    # climb cylinder cannot be applied per sample as it is above - the
+    # outermost sample sits `value * sin(fov/2)` off axis, which would reject
+    # every ceiling beyond `radius / sin(fov/2)` (0.77 m at radius 0.18 m).
+    # A ToF returns the nearest surface anywhere in the cone, so `value`
+    # bounds the distance to whatever is directly overhead: take the lowest
+    # sampled z and report it in the body column, which can understate
+    # headroom but never overstate it.
     accepted: List[Vec3] = []
     for horizontal_index, value in enumerate(record.ranges):
         if measurement_kind(

@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
-<!-- TEST-ONLY world for live-bypass acceptance scenario H (passage BELOW).
-     Generated from the COMMITTED crazyflie_world.sdf plus one unmapped
-     SUSPENDED beam.  Production world untouched; select with world:=<path>. -->
+<!-- Test-only world for live-bypass acceptance scenario H (passage below).
+     Copied from the committed crazyflie_world.sdf plus one unmapped suspended
+     beam.  The normal world is untouched; select with world:=<path>. -->
 <sdf version="1.8">
   <world name="demo">
 
@@ -191,33 +191,30 @@
 
 
     <!-- ================================================================= -->
-    <!-- TEST-ONLY unmapped SUSPENDED beam for acceptance scenario H.      -->
+    <!-- Test-only unmapped suspended beam for acceptance scenario H,      -->
+    <!-- present in no saved map.                                          -->
     <!--                                                                   -->
     <!-- A ceiling-hung duct across the x = 11 corridor: solid from        -->
-    <!-- z = 0.98 m up to z = 1.60 m, with genuinely open air beneath it.   -->
-    <!-- This is a physically sensible object, not a floating slab.        -->
+    <!-- z = 0.98 m to z = 1.60 m, with open air beneath it.               -->
     <!--                                                                   -->
-    <!-- Why it is flown from LAYER 2 (1.00 m) and not layer 1:            -->
-    <!--   The horizontal ranger cone is 27 deg, so at the required 0.60 m  -->
-    <!--   forward clearance it spreads 0.144 m vertically, and the sensor  -->
-    <!--   sits 0.0374 m above base_footprint.  A candidate altitude z      -->
-    <!--   therefore still SEES anything below z + 0.181 m.  From layer 1   -->
-    <!--   (0.50 m) the only reachable downward candidate is 0.40 m - 0.30  -->
-    <!--   m is refused by the floor-clearance gate - which is a 0.10 m     -->
-    <!--   excursion, far less than the 0.181 m the cone spreads.  No beam  -->
-    <!--   can both block at 0.50 m and read clear at 0.40 m, so a below-   -->
-    <!--   pass is geometrically impossible from layer 1.  From layer 2 the -->
-    <!--   drone can reach 0.80 m, and 0.80 + 0.181 = 0.981 m < 0.98 m top  -->
-    <!--   of the open gap, so the pass exists with margin.                 -->
-    <!--                                                                   -->
+    <!-- Why it is flown from layer 2 (1.00 m) and not layer 1: the        -->
+    <!-- horizontal cone is 27 deg, so at the required 0.60 m forward      -->
+    <!-- clearance it spreads 0.144 m vertically, and the sensor sits      -->
+    <!-- 0.0374 m above base_footprint, so a candidate altitude z still    -->
+    <!-- sees anything below z + 0.181 m.  From layer 1 (0.50 m) the only  -->
+    <!-- reachable downward candidate is 0.40 m - 0.30 m is refused by the -->
+    <!-- floor-clearance gate - a 0.10 m excursion, far less than the      -->
+    <!-- 0.181 m spread, so no beam can block at 0.50 m and read clear at  -->
+    <!-- 0.40 m.  From layer 2 the drone reaches 0.80 m, and               -->
+    <!-- 0.80 + 0.181 = 0.981 m sits just above the 0.98 m beam bottom:    -->
     <!--   * blocks at layer 2 (1.00 m): beam bottom 0.98 m is inside the   -->
     <!--     ranger's view at close range, so the guard stops the drone.    -->
     <!--   * clear at the 0.80 m candidate, with 0.98 - 0.83 = 0.15 m of    -->
-    <!--     real airframe clearance under the beam.                        -->
+    <!--     airframe clearance under the beam.                             -->
     <!--   * invisible to layer 1 (0.50 m): the cone reaches only 0.681 m.  -->
     <!--   * descending 1.00 -> 0.80 m needs 0.20 + 0.35 = 0.55 m of floor  -->
-    <!--     clearance; about 0.96 m is available, so the gate passes       -->
-    <!--     honestly rather than by relaxing the margin.                   -->
+    <!--     clearance and about 0.96 m is available, so the gate passes    -->
+    <!--     on its own terms.                                             -->
     <!-- ================================================================= -->
     <model name="bypass_test_suspended_beam">
       <static>true</static>

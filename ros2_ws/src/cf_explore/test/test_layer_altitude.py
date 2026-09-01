@@ -1,20 +1,15 @@
 """A mapping layer is a fixed plane in the room, not a constant ground distance.
 
-Layer 2 sits ~0.40 m above the *original floor*.  When a ~0.20 m obstacle
-passes underneath, ``down`` drops to ~0.20 m and the aircraft must keep flying
-at 0.40 m -- it must not read that as "too low", climb to ~0.60 m, and sink
-again once the obstacle is behind it.
+Layer 2 sits ~0.40 m above the original floor: a 0.20 m obstacle underneath
+drops ``down`` to ~0.20 m and the aircraft must keep flying at 0.40 m, not
+climb to ~0.60 m and sink again once the obstacle is behind it.
 
-Why the naive fix does not work
--------------------------------
-``odom.z`` is not independent of ``down``: the firmware feeds the downward ToF
-straight into the Kalman filter's absolute Z state (``mm_tof.c``), with no
-ground-height state and no discontinuity compensation, and the barometer -- the
-one terrain-independent height reference -- is compiled out
-(``estimator_kalman.c:100``).  So holding ``odom.z`` constant *is* terrain
-following.  ``test_old_path_terrain_follows_over_a_raised_obstacle`` below
-proves that closed-loop against the real control adapter and the firmware's own
-equations, and the matching new-path test proves the repair.
+Holding ``odom.z`` instead is also terrain following - the firmware feeds the
+downward ToF straight into the Kalman absolute Z state (``mm_tof.c``), with no
+ground-height state and no discontinuity compensation, and the barometer, the
+one terrain-independent height reference, is compiled out
+(``estimator_kalman.c:100``).  test_layer_altitude_control.py measures both
+paths against those equations.
 """
 
 import math
@@ -54,11 +49,8 @@ def feed(track, distances, commanded_vz=0.0, dt=0.1, valid=True):
 
 
 def test_layer_target_is_unchanged_across_a_raised_obstacle():
-    """down 0.40 -> 0.20 -> 0.40 at constant true altitude.
-
-    This is the user's scenario verbatim: fly over floor, cross above a 0.20 m
-    obstacle, remain above it, leave it, continue over floor.
-    """
+    """down 0.40 -> 0.20 -> 0.40 at constant true altitude: fly over the floor,
+    cross above a 0.20 m obstacle, dwell there, then leave it."""
     track = tracker()
     profile = ([LAYER_2] * SETTLED          # over the floor
                + [LAYER_2 - BOX] * SETTLED  # above the box
@@ -102,11 +94,9 @@ def test_the_terrain_offset_tracks_the_surface_while_the_plane_holds():
 
 
 def test_an_unconfirmed_step_freezes_rather_than_acting():
-    """The first sight of a step must not move the reported altitude.
-
-    If the step is real the true altitude has not changed, so the frozen value
-    is exactly right; if it was a ToF outlier it costs nothing.
-    """
+    """The first sight of a step must not move the reported altitude: if the
+    step is real the true altitude has not changed, and if it was a ToF outlier
+    freezing costs nothing."""
     track = tracker()
     feed(track, [LAYER_2] * SETTLED)
     assert track.update(LAYER_2 - BOX, True, 0.0, 0.1) == CANDIDATE
@@ -127,7 +117,7 @@ def test_small_down_noise_does_not_move_the_layer_target():
     assert set(events[1:]) == {STEADY}          # never mistaken for a step
     assert track.terrain_offset == pytest.approx(0.0)
     assert track.steps_committed == 0
-    # The reported altitude follows the measurement, but the *plane* does not
+    # The reported altitude follows the measurement, but the plane does not
     # move: the commanded correction stays inside the noise band.
     assert abs(track.hold_velocity(LAYER_2)) <= 0.005
 
@@ -202,11 +192,10 @@ def test_terrain_is_still_detected_while_the_aircraft_is_climbing():
 def test_a_vertical_transition_cannot_commit_a_terrain_step():
     """Climbing changes the ground distance for reasons that are not terrain.
 
-    During takeoff, a layer ascent or a descent the aircraft holds position
-    horizontally, so whatever is underneath it cannot have changed.  Committing
-    a step there would corrupt the datum for the whole rest of the mission --
-    which is exactly what the first raised-obstacle simulation run showed,
-    latching a spurious -0.067 m offset during takeoff.
+    During takeoff, an ascent or a descent the aircraft holds position in XY,
+    so whatever is underneath it cannot have changed.  Committing a step there
+    corrupts the datum for the rest of the mission: a takeoff latched a
+    spurious -0.067 m offset that way.
     """
     track = tracker()
     track.update(0.05, True, 0.0, 0.1, freeze_terrain=True)
@@ -316,9 +305,9 @@ def test_an_implausible_offset_is_refused_instead_of_absorbed():
     assert track.world_z is None
     assert track.hold_velocity(LAYER_2) is None
 
-    # Latched: the ToF is the only absolute height reference in the system, so
-    # nothing here can recover the datum on its own.  More samples must not
-    # quietly re-datum the layer plane onto whatever is underneath now.
+    # The ToF is the only absolute height reference, so nothing here can
+    # recover the datum: more samples must not re-datum the plane onto
+    # whatever is underneath now.
     assert set(feed(track, [0.10] * SETTLED)) == {LOST}
     assert track.world_z is None
     assert track.hold_velocity(LAYER_2) is None
@@ -346,12 +335,9 @@ def test_the_hold_drives_toward_the_plane_and_respects_its_limit():
 
 
 def test_a_negligible_error_commands_exactly_zero():
-    """No artificial floor.
-
-    An exact 0.0 is a legitimate "do not move vertically" command.  Ownership
-    is asserted on the Z-authority heartbeat, never by keeping the magnitude
-    above some other controller's epsilon -- see
-    test_layer_altitude_control.py for the ownership contract.
+    """An exact 0.0 is a legitimate "hold" command, not an absence of one:
+    ownership is asserted on the Z-authority heartbeat, not by keeping |vz|
+    above another controller's epsilon (see test_layer_altitude_control.py).
     """
     track = tracker()
     feed(track, [LAYER_2] * SETTLED)

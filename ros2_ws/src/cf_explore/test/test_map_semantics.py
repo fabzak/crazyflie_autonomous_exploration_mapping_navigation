@@ -48,7 +48,7 @@ def test_saved_free_thresh_keeps_unknown_pixel_unknown(tmp_path):
     assert metadata['free_thresh'] < UNKNOWN_OCCUPANCY
     assert metadata['mode'] == 'trinary'
     assert metadata['negate'] == 0
-    # The historical 0.25 is exactly the bug: it sits above unknown occupancy.
+    # 0.25 sits above unknown occupancy (0.196), which is the bug.
     assert 0.25 > UNKNOWN_OCCUPANCY
 
 

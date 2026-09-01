@@ -1,9 +1,8 @@
 """Real-hardware operator gate and layer bound inside ``layer_explore``.
 
-Both features are default-off so simulation behaviour is bit-for-bit unchanged.
-Following ``test_cf_auto_landing``, these drive the real methods on an instance
-built with ``object.__new__`` and only the attributes each method actually
-reads, so no ROS node or hardware is involved.
+Both are default-off, so simulation behaviour is unchanged.  The real methods
+run on an ``object.__new__`` instance carrying only the attributes they read -
+no ROS node.
 """
 
 from types import SimpleNamespace
@@ -45,7 +44,7 @@ def bare_explorer(**attributes):
 
 
 def test_layer_bound_is_disabled_by_default():
-    """max_layers=0 must leave every existing plan untouched."""
+    """max_layers=0 is the unbounded default: no plan is shortened."""
     node = bare_explorer(max_layers=0,
                          layer_heights=[0.5, 1.0, 1.5, 2.0])
     node._apply_layer_bound()
@@ -71,13 +70,12 @@ def test_layer_bound_is_a_no_op_when_the_plan_is_already_short():
 
 
 def test_layer_bound_covers_the_probe_fallback_that_ignores_clearance():
-    """PROBE's no-overhead-geometry branch bypasses layers_below_ceiling.
+    """PROBE's no-overhead-geometry fallback bypasses layers_below_ceiling.
 
-    That branch installs ``DEFAULT_N_LAYERS`` altitudes from layer_spacing
-    alone and never consults layer_ceiling_clearance_m, so a large clearance
-    cannot bound it.  Its intended corrector, ``_finalize_layer_heights``,
-    reads ``_verified_ceiling_z``, which layer_explore.py never assigns.
-    max_layers is the only bound that holds on this path.
+    It installs ``DEFAULT_N_LAYERS`` altitudes from layer_spacing alone and
+    never reads layer_ceiling_clearance_m, and ``_finalize_layer_heights``
+    cannot correct it because ``_verified_ceiling_z`` is initialised to None
+    and never given a measured value.  max_layers is the only bound here.
     """
     spacing = 0.40
     clearance = 10.0
@@ -175,7 +173,7 @@ def test_gate_release_is_one_way():
 
 
 def test_no_gate_topic_means_no_hold_at_all():
-    """Simulation keeps its exact current behaviour."""
+    """With no gate topic there is nothing to hold for."""
     node = gated_explorer(topic='')
     assert node._start_released is True
     with pytest.raises(AttributeError):
@@ -185,10 +183,9 @@ def test_no_gate_topic_means_no_hold_at_all():
 
 # ── bounded validation gate ───────────────────────────────────────────────
 #
-# For a supervised first flight the mission must be able to stop after a named
-# state.  SCAN completes in ~8 s and SELECT/NAVIGATE follow within one tick,
-# far faster than an operator can react, so the bound has to be in the
-# algorithm rather than in the human.  Default off: simulation is unchanged.
+# SCAN completes in ~8 s and SELECT/NAVIGATE follow within one tick, faster
+# than an operator can react, so a supervised stop after a named state has to
+# live in the state machine.  Default off: simulation is unchanged.
 
 
 def halting_explorer(halt_after='SCAN', state='SCAN'):
@@ -249,7 +246,7 @@ def test_the_gate_fires_only_once():
 
 
 def test_a_land_transition_is_still_allowed_out_of_the_hold():
-    """The operator abort path must never be blocked by the bound."""
+    """The operator abort path must not be blocked by the bound."""
     node = halting_explorer()
     LayerExplorer._set_state(node, 'SELECT')
     assert node.state == LayerExplorer.VALIDATION_HOLD
@@ -259,10 +256,9 @@ def test_a_land_transition_is_still_allowed_out_of_the_hold():
 
 # ── the two-layer real-hardware bound ─────────────────────────────────────
 #
-# The physical test environment is arranged with obstacles so that only
-# z = 0.20 m and z = 0.40 m are safe mapping altitudes and nothing above.
-# The bound must come from configuration the state machine actually honours,
-# not from hoping the experiment is stopped in time.
+# In the physical test room only z = 0.20 m and z = 0.40 m are safe mapping
+# altitudes, so the layer count has to be bounded by configuration the state
+# machine honours rather than by stopping the run in time.
 
 
 TWO_LAYER = dict(spacing=0.20, clearance=0.30, max_layers=2)
@@ -301,10 +297,10 @@ def test_maximum_mapping_altitude_is_spacing_times_max_layers():
 
 
 def test_takeoff_target_is_not_inflated_by_an_overshoot_term():
-    """0.20 m must stay 0.20 m, not silently become 0.23 m."""
+    """0.20 m must stay 0.20 m, not become 0.23 m."""
     layer_one, takeoff_min, overshoot = 0.20, 0.20, 0.0
     assert max(layer_one, takeoff_min) + overshoot == pytest.approx(0.20)
-    # The shipped 0.03 overshoot would have exceeded the layer altitude.
+    # A 0.03 overshoot term would put takeoff above the layer altitude.
     assert max(layer_one, takeoff_min) + 0.03 > 0.20
 
 
@@ -317,11 +313,9 @@ def test_no_third_layer_survives_the_bound():
 
 # ── SELECT-only bounded validation ────────────────────────────────────────
 #
-# Stage A validates the first real frontier choice with NO autonomous XY
-# motion.  The parameter name is not proof, so these pin the three properties
-# the flight actually depends on: SELECT's own transition is intercepted, the
-# planner evidence survives the interception for post-flight analysis, and the
-# dispatcher can never reach _st_navigate afterwards.
+# halt_after_state='SELECT' must give a first frontier choice with no XY
+# motion: SELECT's own transition is intercepted, the planner evidence survives
+# the interception, and _st_navigate is unreachable afterwards.
 
 
 def test_select_halt_intercepts_the_navigate_transition():
@@ -354,7 +348,7 @@ def test_select_halt_also_catches_the_no_frontier_exits():
 
 
 def test_validation_hold_dispatches_to_a_zero_command_only():
-    """The held state must publish an explicit zero, never a motion command."""
+    """The held state publishes a zero command, not a motion command."""
     node = bare_explorer(state=LayerExplorer.VALIDATION_HOLD, commands=[])
     node._cmd = lambda *a, **k: node.commands.append((a, k))
     handler = getattr(node, f'_st_{node.state.lower()}')
@@ -363,26 +357,24 @@ def test_validation_hold_dispatches_to_a_zero_command_only():
 
 
 def test_navigate_is_unreachable_once_the_hold_is_latched():
-    """One handler per tick, resolved from state: _st_navigate never runs."""
+    """One handler per tick, resolved from state, so _st_navigate cannot run."""
     node = halting_explorer(halt_after='SELECT', state='SELECT')
     node._st_navigate = lambda: pytest.fail('_st_navigate must never execute')
     LayerExplorer._set_state(node, 'NAVIGATE')
-    # Whatever the tick dispatches next is resolved from the CURRENT state.
+    # Whatever the tick dispatches next is resolved from the current state.
     assert node.state == LayerExplorer.VALIDATION_HOLD
     assert f'_st_{node.state.lower()}' == '_st_validation_hold'
 
 
 def test_the_hold_itself_never_requests_a_transition():
-    """What actually keeps NAVIGATE unreachable.
+    """The latch is one-shot, so nothing may request a transition out of the
+    hold.
 
-    The latch is one-shot and keyed on `state == halt_after_state`, so once
-    the state is VALIDATION_HOLD a *further* _set_state('NAVIGATE') would NOT
-    be intercepted a second time.  Safety therefore rests on nothing ever
-    asking: _st_validation_hold publishes a zero command and makes no
-    transition, VALIDATION_HOLD is absent from the dispatcher's
-    geometry_motion_states so the close-obstacle guard cannot fire from it,
-    and _advance_paused_deadlines only acts in TAKEOFF/ASCEND.  Pin the
-    load-bearing half of that here.
+    Once the state is VALIDATION_HOLD a second _set_state('NAVIGATE') is not
+    intercepted.  What keeps NAVIGATE unreachable is that _st_validation_hold
+    only publishes a zero command, VALIDATION_HOLD is not in the dispatcher's
+    geometry_motion_states, and _advance_paused_deadlines only acts in
+    TAKEOFF/ASCEND.
     """
     node = bare_explorer(state=LayerExplorer.VALIDATION_HOLD, commands=[])
     node._cmd = lambda *a, **k: node.commands.append((a, k))
@@ -403,21 +395,18 @@ def test_validation_hold_is_not_a_geometry_motion_state():
 
 # ── first frontier only: halt_after_state=NAVIGATE ────────────────────────
 #
-# The 2026-08-26 experiment flies exactly ONE frontier.  SELECT must hand over
-# to NAVIGATE normally and NAVIGATE must fly its route normally; only the
-# transition OUT of NAVIGATE may be diverted into the zero-motion hold.  Every
-# outgoing edge of NAVIGATE is covered below, because an unintended SECOND
-# exploration cycle is precisely the failure this bound exists to prevent.
-#
-# Outgoing edges of NAVIGATE, all of which route through _set_state:
-#   arrival (all waypoints consumed) -> _start_scan()            :1738
+# SELECT -> NAVIGATE stays untouched and NAVIGATE flies its route normally;
+# only the transition out of NAVIGATE is diverted into the zero-motion hold.
+# Every outgoing edge is covered below, since a second exploration cycle is the
+# failure this bound prevents.  All of them route through _set_state:
+#   arrival (all waypoints consumed) -> _start_scan
 #   stall / replan failure           -> _abort_nav -> _start_scan
-#   close obstacle (from _tick)      -> _enter_close_obstacle_.. :1914
+#   close obstacle (from _tick)      -> _enter_close_obstacle_recovery
 #   successful replan                -> no transition; stays NAVIGATE
 
 
 def _navigate_node(halt_after='NAVIGATE'):
-    """A NAVIGATE-state node wired for the REAL _start_scan to run."""
+    """A NAVIGATE-state node wired so the real _start_scan can run."""
     node = halting_explorer(halt_after=halt_after, state='NAVIGATE')
     node.commands = []
     node._cmd = lambda *a, **k: node.commands.append((a, k))
@@ -440,12 +429,8 @@ def test_navigate_halt_lets_select_hand_over_to_navigate():
 
 
 def test_first_frontier_arrival_ends_in_zero_motion_validation_hold():
-    """The whole point: real arrival criterion -> real _start_scan -> hold.
-
-    Drives the actual _st_navigate completion branch (every waypoint
-    consumed), which calls the actual _start_scan, whose closing
-    _set_state("SCAN") is what the bound intercepts.
-    """
+    """Drives the real _st_navigate completion branch: all waypoints consumed
+    -> _start_scan -> its _set_state("SCAN") is what the bound intercepts."""
     node = _navigate_node()
     node._ranges = {'front': 1.5, 'left': 1.5, 'right': 1.5}
     node.waypoints = []
@@ -463,7 +448,7 @@ def test_first_frontier_arrival_ends_in_zero_motion_validation_hold():
                for _, message in node._logger.messages)
     assert node.state == LayerExplorer.VALIDATION_HOLD
     assert node._validation_halted is True
-    # and the hold that follows commands nothing at all
+    # and the hold that follows commands nothing
     node.commands.clear()
     LayerExplorer._st_validation_hold(node)
     assert node.commands == [((), {})]
@@ -494,7 +479,7 @@ def test_navigate_halt_diverts_close_obstacle_recovery():
 
 
 def test_a_successful_replan_keeps_flying_the_same_first_frontier():
-    """Replanning must NOT trip the bound - it is not a transition."""
+    """Replanning must not trip the bound: it is not a transition."""
     source = inspect.getsource(LayerExplorer._replan_same_target)
     assert '_set_state' not in source
 

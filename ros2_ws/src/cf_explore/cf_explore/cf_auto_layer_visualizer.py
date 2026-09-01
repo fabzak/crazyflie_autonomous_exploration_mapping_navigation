@@ -1,23 +1,18 @@
 """cf_auto_layer_visualizer - passive RViz2 overview of every saved map layer.
 
-Renders all of cf_auto's configured layer maps at once, each at its real saved
-altitude, as a single ``visualization_msgs/MarkerArray`` on
-``/layer_map_markers``.  It complements - never replaces - the existing
-``nav_msgs/OccupancyGrid`` ``/map`` display, which shows only the one layer the
-map_server currently holds.
+Renders all of cf_auto's configured layer maps at once, each at its saved
+altitude, as one ``visualization_msgs/MarkerArray`` on ``/layer_map_markers``.
+It complements the ``nav_msgs/OccupancyGrid`` ``/map`` display, which shows
+only the one layer map_server currently holds.
 
-The node is strictly one-way:
+Passive: the sole input is the latched ``/cf_auto/active_layer``, used for
+highlighting.  No velocity, no control authority, no feedback into cf_auto.
 
-    saved map files -> cf_auto_layer_visualizer -> /layer_map_markers -> RViz2
-
-It subscribes to nothing, publishes no velocity, holds no control authority and
-feeds nothing back into cf_auto.
-
-Occupancy is classified exactly the way Nav2's trinary loader does it, matching
-``layer_explore.saved_cell_semantics``; only *occupied* cells are drawn, so
+Occupancy is classified the way Nav2's trinary loader does it, matching
+``layer_explore.saved_cell_semantics``; only occupied cells are drawn, so
 unknown space cannot be mistaken for structure.  Row order follows the saved
-PGM convention established by ``layer_explore.GridMap.save``, which writes
-``pixels[::-1, :]`` - PGM row 0 is the *highest* y in map coordinates.
+PGM convention from ``layer_explore.GridMap.save``, which writes
+``pixels[::-1, :]`` - PGM row 0 is the highest y in map coordinates.
 """
 
 import json
@@ -46,7 +41,7 @@ ACTIVE_LAYER_TOPIC = '/cf_auto/active_layer'
 ACTIVE_SUFFIX = ' - ACTIVE'
 
 # Readable on RViz2's default 48;48;48 background, cycled by layer position so
-# the palette never depends on how many layers exist.
+# the palette does not depend on how many layers exist.
 PALETTE: Tuple[Tuple[float, float, float], ...] = (
     (0.90, 0.20, 0.20),   # red
     (0.95, 0.75, 0.10),   # amber
@@ -149,8 +144,8 @@ def load_layer_map(yaml_path: str, layer_id: int,
                    z_height: Optional[float] = None) -> LayerMap:
     """Load one saved layer from its map YAML plus its sibling JSON metadata.
 
-    ``z_height`` is a fallback only.  The saved ``map_layer_N.json`` next to the
-    YAML is the authoritative altitude record and wins whenever it exists.
+    The sibling ``map_layer_N.json`` holds the altitude of record and wins; the
+    ``z_height`` argument is only a fallback.
     """
     if not os.path.isfile(yaml_path):
         raise LayerMapError(f'layer map metadata not found: {yaml_path}')
@@ -215,8 +210,8 @@ def load_layer_map(yaml_path: str, layer_id: int,
 def read_sidecar_json(yaml_path: str) -> Tuple[Optional[float], Optional[int]]:
     """Return ``(z_height, layer)`` from ``<stem>.json``, or ``(None, None)``.
 
-    A missing sidecar is normal and is not an error; a *corrupt* one is, because
-    silently guessing an altitude would draw a layer at the wrong height.
+    A missing sidecar is normal; a corrupt one raises, since guessing an
+    altitude would draw the layer at the wrong height.
     """
     json_path = os.path.splitext(yaml_path)[0] + '.json'
     if not os.path.isfile(json_path):
@@ -257,12 +252,11 @@ def occupancy_from_pixels(pixels: np.ndarray, negate: int) -> np.ndarray:
 
 
 def occupied_mask(layer: LayerMap) -> np.ndarray:
-    """Boolean mask of the cells Nav2 would load as *occupied*.
+    """Boolean mask of the cells Nav2 would load as occupied.
 
-    Mirrors ``layer_explore.saved_cell_semantics``: strictly greater than
-    ``occupied_thresh``.  Free and unknown cells are both excluded, so
-    ``free_thresh`` - the value cf_auto corrects at launch time - cannot change
-    what this draws.
+    Mirrors ``layer_explore.saved_cell_semantics``: strictly above
+    ``occupied_thresh``, so the ``free_thresh`` cf_auto corrects at launch
+    cannot change what is drawn.
     """
     occupancy = occupancy_from_pixels(layer.pixels, layer.negate)
     return occupancy > layer.occupied_thresh
@@ -272,8 +266,8 @@ def occupied_cell_centers(layer: LayerMap) -> np.ndarray:
     """World XY centres of every occupied cell, shape ``(N, 2)``.
 
     ``layer_explore.GridMap.save`` writes the grid as ``pixels[::-1, :]``, so
-    PGM row 0 holds the *largest* y.  Undoing that flip is what keeps the
-    markers from appearing vertically mirrored against ``/map``.
+    PGM row 0 holds the largest y.  Undoing that flip is what keeps the markers
+    from appearing vertically mirrored against ``/map``.
     """
     rows, cols = np.nonzero(occupied_mask(layer))
     grid_rows = (layer.height - 1) - rows          # PGM row -> occupancy row
@@ -285,10 +279,8 @@ def occupied_cell_centers(layer: LayerMap) -> np.ndarray:
 def downsample_centers(centers: np.ndarray, max_cells: int) -> np.ndarray:
     """Stride-thin a cell list that would be too heavy for RViz2.
 
-    Striding rather than truncating keeps the sample spatially uniform instead
-    of dropping one whole side of the map.  The real saved maps hold roughly
-    2900 occupied cells per layer, so this never triggers in practice; it is a
-    guard against a pathologically dense map.
+    Striding keeps the sample spatially uniform; truncating would drop one
+    whole side of the map.  A guard only - the saved maps are far below the cap.
     """
     if max_cells <= 0 or len(centers) <= max_cells:
         return centers
@@ -298,13 +290,12 @@ def downsample_centers(centers: np.ndarray, max_cells: int) -> np.ndarray:
 
 def label_position(layer: LayerMap, centers: np.ndarray, margin_m: float,
                    stagger_m: float, index: int) -> Tuple[float, float]:
-    """Deterministic label anchor just outside the mapped structure.
+    """Label anchor just outside the mapped structure.
 
-    Anchored to the occupied-cell bounding box rather than the full 42.5 m
-    canvas, so labels stay beside the content instead of drifting off to an
-    empty corner.  The per-layer y stagger keeps them legible in a top-down
-    view, where the altitude separation alone would stack them.  Falls back to
-    the grid extent for a layer with no occupied cells.
+    Anchored to the occupied-cell bounding box, not the grid extent, so labels
+    stay beside the content; the per-layer y stagger keeps them apart in a
+    top-down view, where altitude alone does not separate them.  A layer with
+    no occupied cells falls back to the grid extent.
     """
     if centers.size:
         anchor_x = float(np.max(centers[:, 0]))
@@ -335,13 +326,12 @@ def build_marker_array(layers: Sequence[LayerMap], frame_id: str, stamp,
                        label_stagger_m: float = 0.6,
                        text_height_m: float = 0.4,
                        max_cells_per_layer: int = 200000) -> MarkerArray:
-    """Two markers per layer: one CUBE_LIST of occupied cells, one text label.
+    """Two markers per layer: a CUBE_LIST of occupied cells and a text label.
 
-    Marker ids are the configured layer ids, so a republish overwrites in place
-    and nothing has to be deleted.  Each cube centre carries its layer altitude
-    directly in ``points[i].z`` with an identity marker pose: RViz composes
-    ``pose`` with ``points``, so putting the altitude in the points makes the
-    message self-describing and independent of that composition.
+    Marker ids are the layer ids, so a republish overwrites in place and
+    nothing has to be deleted.  Altitude goes in ``points[i].z`` with an
+    identity marker pose - RViz composes ``pose`` with ``points``, and this
+    keeps the message self-describing.
     """
     array = MarkerArray()
     for index, layer in enumerate(layers):
@@ -357,15 +347,15 @@ def build_marker_array(layers: Sequence[LayerMap], frame_id: str, stamp,
         cells.type = Marker.CUBE_LIST
         cells.action = Marker.ADD
         cells.pose.orientation.w = 1.0
-        # Slightly under one cell so neighbouring cubes do not z-fight along
-        # their shared faces.  This thickness is a rendering choice only and
-        # says nothing about measured wall height.
+        # Slightly under one cell so neighbouring cubes do not z-fight.  A
+        # rendering choice; not a measured wall height.
         cells.scale.x = layer.resolution * float(cell_footprint_factor)
         cells.scale.y = layer.resolution * float(cell_footprint_factor)
         cells.scale.z = float(cell_thickness_m)
         cells.color.r, cells.color.g, cells.color.b = red, green, blue
         cells.color.a = float(alpha)
-        # Static in the map frame; nothing to re-transform per rendered frame.
+        # The points are already in the map frame, so RViz need not
+        # re-transform them each render.
         cells.frame_locked = False
         cells.points = [_point(x, y, layer.z_height) for x, y in centers]
         array.markers.append(cells)
@@ -398,15 +388,13 @@ def apply_active_layer(message: MarkerArray, active_layer_id: Optional[int],
                        inactive_alpha: float = 0.25) -> MarkerArray:
     """Re-style an already-built array to emphasise the active layer.
 
-    Appearance only: it touches ``color`` and label ``text`` and nothing else,
-    so cell geometry, altitudes, namespaces and marker ids all stay exactly as
-    built.  The array is mutated in place - the cell positions are the
-    expensive part and never need recomputing for a layer change.
+    Appearance only - ``color`` and label ``text``; geometry, altitudes,
+    namespaces and marker ids are untouched.  The array is mutated in place
+    because recomputing the cell positions is the expensive part.
 
-    ``active_layer_id`` of ``None`` means "not known yet": every layer falls
-    back to the neutral ``base_alpha`` rather than being dimmed as inactive.
-    Emphasis is deliberately not colour alone - the active label also says so -
-    because the palette already varies per layer.
+    ``active_layer_id`` of ``None`` means "not known yet": every layer gets the
+    neutral ``base_alpha`` rather than being dimmed as inactive.  The active
+    label also says so in text, since the palette already varies per layer.
     """
     for marker in message.markers:
         if marker.ns not in (CELLS_NS, LABELS_NS):
@@ -419,8 +407,8 @@ def apply_active_layer(message: MarkerArray, active_layer_id: Optional[int],
         if marker.ns == CELLS_NS:
             marker.color.a = float(alpha)
         else:
-            # Labels stay fully opaque when active and merely fade otherwise,
-            # so an inactive layer is still readable.
+            # Labels stay opaque when active and only fade otherwise, so an
+            # inactive layer is still readable.
             marker.color.a = 1.0 if active or active_layer_id is None else 0.5
             marker.text = _label_with_state(marker.text, active)
     return message
@@ -472,11 +460,10 @@ class CfAutoLayerVisualizer(Node):
         self.declare_parameter('active_alpha', 0.95)
         self.declare_parameter('inactive_alpha', 0.25)
         self.declare_parameter('highlight_active_layer', True)
-        # Belt and braces for the latch below: RViz2's MarkerArray display
-        # subscribes VOLATILE unless its per-topic Durability is set to
-        # Transient Local.  A volatile subscriber is compatible with a
-        # transient-local publisher but is not given the retained sample, so a
-        # slow republish makes a hand-added display fill in on its own.
+        # RViz2's MarkerArray display subscribes VOLATILE unless its Durability
+        # is set to Transient Local, and a volatile subscriber never gets the
+        # retained sample - so a slow republish makes a hand-added display fill
+        # in on its own.
         self.declare_parameter('republish_period_sec', 5.0)
 
         self.map_frame = self.get_parameter('map_frame').value
@@ -499,9 +486,8 @@ class CfAutoLayerVisualizer(Node):
             depth=1)
         self.publisher = self.create_publisher(MarkerArray, TOPIC, latched)
 
-        # Read-only: the active layer only ever changes how the already-loaded
-        # geometry is drawn.  cf_auto publishes this latched, so the layer is
-        # known even if this node starts after the mission.
+        # The active layer only changes how the loaded geometry is drawn.
+        # cf_auto publishes it latched, so a late start still learns the layer.
         self.active_layer: Optional[int] = None
         if self.get_parameter('highlight_active_layer').value:
             self.create_subscription(Int32, ACTIVE_LAYER_TOPIC,
@@ -531,9 +517,8 @@ class CfAutoLayerVisualizer(Node):
             self.get_logger().error(
                 f'No saved layer map could be loaded; {TOPIC} stays empty.')
 
-        # The saved maps do not change during a cf_auto mission, so there is no
-        # reload, no filesystem watcher and no polling - only a republish of
-        # the already-built message.
+        # Saved maps do not change during a mission: no reload and no watcher,
+        # just a periodic republish of the built message.
         period = float(self.get_parameter('republish_period_sec').value)
         if period > 0.0 and self.message is not None:
             self.create_timer(period, self._publish)
@@ -544,9 +529,8 @@ class CfAutoLayerVisualizer(Node):
                                       ) -> List[str]:
         """Fall back to the configured layer ids under the project map dir.
 
-        Only ids cf_auto is actually configured for are considered - the
-        directory is never scanned, so obsolete, temporary or test maps can
-        never appear in the visualization.
+        Only the configured ids are tried; the directory is never scanned, so
+        obsolete or test maps cannot appear in the visualization.
         """
         map_dir = default_map_dir()
         found = []
@@ -568,7 +552,6 @@ class CfAutoLayerVisualizer(Node):
             try:
                 layer = load_layer_map(yaml_path, layer_id, fallback_z)
             except LayerMapError as exc:
-                # Loud and specific, never a silently wrong slice.
                 self.get_logger().error(f'skipping layer map: {exc}')
                 continue
             if fallback_z is not None and abs(layer.z_height - fallback_z) > 1e-6:
@@ -597,7 +580,7 @@ class CfAutoLayerVisualizer(Node):
             f'{self.map_frame}.')
 
     def _on_active_layer(self, msg: Int32):
-        """Restyle and republish; never reload, never move anything."""
+        """Restyle and republish; never reload or move geometry."""
         if msg.data == self.active_layer or self.message is None:
             return
         self.active_layer = int(msg.data)

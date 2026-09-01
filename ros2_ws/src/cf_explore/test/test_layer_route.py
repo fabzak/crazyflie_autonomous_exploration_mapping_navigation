@@ -1,10 +1,8 @@
-"""Gate 1: pure static multi-layer route planning.
+"""Static multi-layer route planning over small synthetic layer stacks.
 
-These tests never start ROS.  They build small synthetic layer stacks, hand them
-to :func:`cf_explore.layer_route.plan_3d_route`, and assert on the route that
-comes back.  ``GridMap`` is imported from ``cf_auto`` deliberately - the whole
-point of the design is that the 3D search reuses the *existing*, validated
-inflation / occupancy / line-of-sight semantics rather than a parallel copy.
+No ROS graph is started.  ``GridMap`` is imported from ``cf_auto`` so the 3D
+search is tested against the same inflation, occupancy and line-of-sight
+semantics the follower uses, not a parallel copy.
 """
 
 import math
@@ -157,7 +155,7 @@ def test_upper_layer_route_when_wall_blocks_the_start_layer():
 
 
 def test_lower_layer_route_is_supported():
-    """The same bypass, but the clear layer is *below* the start layer."""
+    """The same bypass, but the clear layer is below the start layer."""
     blocked = make_grid(wall_row_grid(9, 9, wall_y=4))
     clear = make_grid(open_rows(9, 9))
     grids = {0: clear, 1: blocked}
@@ -230,7 +228,7 @@ def test_route_to_a_genuinely_different_goal_layer_does_not_return():
 
 
 def test_cost_is_horizontal_plus_vertical_distance():
-    """A pure vertical hop costs exactly the altitude difference."""
+    """A pure vertical hop costs the altitude difference and nothing more."""
     grids = {0: make_grid(open_rows(5, 5)), 1: make_grid(open_rows(5, 5))}
     heights = [0.5, 1.25]
     route = plan_3d_route(grids, heights, (0.05, 0.05), 0, (0.05, 0.05), 1)
@@ -269,7 +267,7 @@ def test_expensive_vertical_hop_loses_to_a_short_detour():
 
 
 def test_reported_length_matches_the_returned_legs():
-    """length_m must describe the polyline actually handed to the follower."""
+    """length_m must describe the polyline handed to the follower."""
     blocked = make_grid(wall_row_grid(11, 11, wall_y=5))
     clear = make_grid(open_rows(11, 11))
     grids = {0: blocked, 1: clear}
@@ -291,7 +289,7 @@ def test_equal_length_routes_break_the_tie_on_fewer_layer_changes():
     """Two identical-length options: the flat one must be chosen."""
     grids = {0: make_grid(open_rows(11, 11)), 1: make_grid(open_rows(11, 11))}
     # A zero-height stack makes the vertical hop free, so both routes tie
-    # exactly; only the tie-break can decide.
+    # exactly and only the tie-break can decide.
     heights = [0.5, 0.5]
     route = plan_3d_route(grids, heights, (0.05, 0.05), 0, (0.95, 0.05), 0)
     assert route is not None
@@ -314,7 +312,7 @@ def test_tie_break_is_deterministic_across_runs():
 
 
 def test_unknown_cells_are_never_traversed():
-    """An unknown band must block the route exactly like an occupied one."""
+    """An unknown band blocks the route like an occupied one."""
     rows = open_rows(9, 9)
     for x in range(9):
         rows[4][x] = UNKNOWN
@@ -391,11 +389,9 @@ def test_heights_table_shorter_than_the_cache_is_rejected():
 
 
 def test_live_marking_does_not_touch_the_static_cache():
-    """A live obstacle burned into the ACTIVE grid must not reach the cache.
-
-    This is the invariant that keeps an unmapped obstacle from being taken as
-    proof that some other saved layer is clear.
-    """
+    """A live obstacle burned into the active grid must not reach the cache,
+    or an unmapped obstacle becomes proof that some other saved layer is
+    clear."""
     rows = open_rows(9, 9)
     static_layer0 = make_grid(rows)
     static_layer1 = make_grid(rows)

@@ -1,7 +1,4 @@
-"""Pure tests for the real Crazyswarm2 six-range adapter.
-
-No ROS executor, Crazyswarm server, radio, or hardware is started here.
-"""
+"""The real Crazyswarm2 six-range adapter; no ROS graph is started."""
 
 from dataclasses import replace
 import math
@@ -169,9 +166,9 @@ def test_nonpositive_value_becomes_one_nan_observation(index, bad_value):
 def test_positive_under_range_reports_range_min_not_nan(index, close_mm):
     """A target nearer than the rated minimum is a detection, not a gap.
 
-    Collapsing it onto NaN made a touching obstacle indistinguishable from
-    open space, and made the grounded down ranger (8-13 mm on hardware)
-    latch the safety watchdog before takeoff.
+    Collapsing it onto NaN makes a touching obstacle indistinguishable from
+    open space, and lets the grounded down ranger (8-13 mm on hardware) latch
+    the safety watchdog before takeoff.
     """
     values = [1000.0] * 6
     values[index] = close_mm

@@ -2,10 +2,10 @@
 """Shared real-hardware operator supervisor for ``layer_explore_real`` and
 ``cf_auto_real``.
 
-Launching a real profile must never arm the aircraft or start autonomous
-motion.  This node owns the only path from a human keypress to an arm, start,
-land or emergency request, and it publishes the single authorization heartbeat
-that both the algorithm start gate and the control adapter require.
+Launching a real profile does not arm the aircraft or start autonomous motion.
+This node is the only path from a human keypress to an arm, start, land or
+emergency request, and it publishes the authorization heartbeat that the
+algorithm start gate and the control adapter both require.
 
 Keys (see :class:`KeyEvent`)::
 
@@ -14,15 +14,13 @@ Keys (see :class:`KeyEvent`)::
     L       ABORT + CONTROLLED LAND
     SPACE   EMERGENCY MOTOR STOP
 
-The decision logic lives in :class:`OperatorSupervisor`, which is ROS-free and
-driven by caller-supplied monotonic times so every interlock is unit-testable
-without hardware.  The ROS node is an I/O shell: keyboard acquisition, service
-calls and the authorization heartbeat.
-
-Fail-closed everywhere.  Authorization is a *heartbeat*, never a latch: if this
-node dies, stalls, or its keyboard backend fails, the heartbeat stops, the
-control adapter's freshness gate expires, and an airborne vehicle is landed by
-the adapter's existing notify/land handover.
+:class:`OperatorSupervisor` holds the interlock logic: ROS-free, driven by
+caller-supplied monotonic times, so every interlock is testable without
+hardware.  The node around it is an I/O shell (keyboard, service calls,
+heartbeat).  Authorization is a heartbeat, not a latch: if this node dies,
+stalls or loses its keyboard backend, the heartbeat stops, the control
+adapter's freshness gate expires, and an airborne vehicle comes down through
+the adapter's notify/land handover.
 """
 
 from __future__ import annotations
@@ -101,27 +99,24 @@ class OperatorConfig:
     odom_timeout_sec: float = 0.50
     arm_confirmation_timeout_sec: float = 3.0
     disarm_confirmation_timeout_sec: float = 3.0
-    #: How long after a confirmed touchdown the run is considered finished.
+    #: How long LANDING may run without a confirmed touchdown before the
+    #: operator is warned to press SPACE.  The warning repeats at this interval.
     land_confirmation_timeout_sec: float = 30.0
-    #: How far above its RESTING altitude the vehicle must rise before it is
-    #: treated as airborne, used only together with a supervisor that is not
-    #: reporting IS_FLYING.  This is a margin, not an absolute altitude: a
-    #: Crazyflie taking off from a 0.16 m stand rests above any sensible
-    #: absolute threshold, and an absolute test latched it permanently
-    #: airborne so it could never be armed (observed 2026-08-22).  The
-    #: resting altitude is learned while the supervisor reports not-flying.
+    #: Margin above the learned resting altitude at which the vehicle counts as
+    #: airborne, used only when the supervisor is not reporting IS_FLYING.  It
+    #: has to be a margin: a Crazyflie on a 0.16 m stand rests above any
+    #: sensible absolute threshold, and an absolute test latches it airborne
+    #: for good, so it can never be armed.  The resting altitude is learned
+    #: while the supervisor reports not-flying.
     grounded_height_m: float = 0.12
-    #: How long continuous grounded evidence must hold before the airborne
-    #: latch is released.  The firmware IS_FLYING bit is the real protection;
-    #: this debounce only stops a momentary altitude dip from clearing it.
+    #: Grounded evidence must hold this long before the airborne latch clears.
+    #: IS_FLYING is the real protection; this only rejects a momentary dip.
     grounded_debounce_sec: float = 1.0
-    #: Largest planar distance from the odometry origin at which autonomy may
-    #: be started, in metres.  The Flow deck integrates apparent motion while
-    #: the airframe is hand-carried, and the estimate does not reset until the
-    #: next boot, so a drone moved after power-up can report tens of metres.
-    #: layer_explore maps into a fixed +/-16.25 m grid centred on that origin,
-    #: so starting from a drifted pose maps off-grid from the first sample.
-    #: 0 disables the check.
+    #: Largest planar distance [m] from the odometry origin at which autonomy
+    #: may start.  The Flow deck integrates apparent motion while the airframe
+    #: is carried and does not reset until the next boot, so a drone moved
+    #: after power-up can report tens of metres - straight off the fixed
+    #: +/-16.25 m grid layer_explore maps into.  0 disables the check.
     max_start_offset_m: float = 5.0
 
     def __post_init__(self) -> None:
@@ -158,9 +153,9 @@ class OperatorDecision:
 class OperatorSupervisor:
     """Pure operator interlock state machine.
 
-    Every method takes a monotonic ``now`` supplied by the caller.  No wall
-    clock, no ROS, no I/O.  The only outputs are the current state, the
-    authorization flag, and :meth:`required_service`.
+    Every method takes a caller-supplied monotonic ``now``; no ROS, no I/O.
+    The outputs are the state, the authorization flag and
+    :meth:`required_service`.
     """
 
     def __init__(self, config: OperatorConfig = OperatorConfig()):
@@ -175,10 +170,9 @@ class OperatorSupervisor:
         self._height: Optional[float] = None
         self._planar_offset: Optional[float] = None
         self._odom_at: Optional[float] = None
-        #: Set by any evidence the vehicle has left the ground, and cleared
-        #: only by sustained positive evidence that it is back on it.  A
-        #: vehicle that was picked up by hand and set down again must be
-        #: armable, but a momentary altitude dip in flight must not clear it.
+        #: Set by any evidence of flight, cleared only by sustained grounded
+        #: evidence: a vehicle picked up by hand and set down again has to be
+        #: armable, but an in-flight altitude dip must not clear it.
         self._airborne_latched = False
         self._grounded_since: Optional[float] = None
         #: Altitude the vehicle reads while resting on whatever it sits on.
@@ -219,8 +213,8 @@ class OperatorSupervisor:
                 self._ground_reference_z = float(height)
             return
         if height > self.airborne_height_threshold():
-            # Checked BEFORE any further learning, so a climbing aircraft can
-            # never drag its own reference upward and hide the climb.
+            # Checked before any further learning: a climbing aircraft must not
+            # drag its own ground reference upward and hide the climb.
             self._airborne_latched = True
         elif settled:
             self._ground_reference_z = float(height)
@@ -252,9 +246,9 @@ class OperatorSupervisor:
     def airborne(self, now: float) -> bool:
         """Whether the vehicle must be assumed to be off the ground.
 
-        Latched on the first evidence of flight and cleared only by a
-        confirmed landing.  Unknown counts as airborne: a stale supervisor
-        can never be used to justify cutting the motors.
+        Latched on the first evidence of flight and cleared only by a confirmed
+        landing.  Unknown counts as airborne: a stale supervisor can never
+        justify cutting the motors.
         """
         if self._airborne_latched:
             return True
@@ -335,11 +329,10 @@ class OperatorSupervisor:
                 return ('ARM REJECTED: aircraft is airborne or its state is '
                         'unknown')
             if self._supervisor & SUPERVISOR_IS_ARMED:
-                # The vehicle survived a previous run already armed, so
-                # CAN_BE_ARMED is clear and a fresh Arm request would be
-                # refused.  Adopt the real vehicle state instead of
-                # deadlocking; the operator still pressed a key to get here,
-                # and a second press now disarms as usual.
+                # Already armed from a previous run: CAN_BE_ARMED is clear, so
+                # a fresh arm request would be refused.  Adopt the vehicle's
+                # real state rather than deadlocking; a second Alt press
+                # disarms as usual.
                 self._set_state(OperatorState.ARMED_IDLE, now)
                 return ('KEY Alt -> vehicle is already ARMED; adopting '
                         'ARMED_IDLE. Press Alt again to disarm.')
@@ -416,12 +409,11 @@ class OperatorSupervisor:
     # ── outputs ───────────────────────────────────────────────────────────
 
     def authorized(self, now: float) -> bool:
-        """Whether autonomous motion is authorized on this exact tick."""
+        """Whether autonomous motion is authorized on this tick."""
         if self.emergency_latched or self.land_latched:
             return False
         if self.state not in AUTHORIZED_STATES:
             return False
-        # Authorization is only ever asserted against fresh evidence.
         return bool(self.status_fresh(now) and self.odometry_fresh(now))
 
     def required_service(self) -> Optional[str]:
@@ -469,9 +461,8 @@ class OperatorSupervisor:
     def _update_grounded_evidence(self, now: float) -> None:
         """Release the airborne latch on sustained grounded evidence.
 
-        The firmware IS_FLYING bit does the real work: it stays set for the
-        whole flight, so no in-flight altitude dip can clear the latch.  The
-        debounce only guards against a single stale-looking sample.
+        IS_FLYING stays set for the whole flight, so no in-flight altitude dip
+        can clear the latch; the debounce only rejects a single odd sample.
         """
         grounded_now = (
             self.status_fresh(now)
@@ -494,7 +485,7 @@ class OperatorSupervisor:
         if not math.isfinite(now):
             return OperatorDecision(self.state, False, '')
         # LANDING owns the latch itself: it must reach DISARMED_STOPPED on a
-        # confirmed touchdown rather than silently un-latching beforehand.
+        # confirmed touchdown rather than un-latching beforehand.
         if self.state != OperatorState.LANDING:
             self._update_grounded_evidence(now)
         message = ''
@@ -519,18 +510,11 @@ class OperatorSupervisor:
                 self._set_state(OperatorState.EMERGENCY_LATCHED, now)
             elif self.confirmed_grounded(now) and not self.confirmed_armed(now):
                 # The run ended without an operator L: a watchdog latch, an
-                # adapter fault landing, a supervisor cannot-fly, or an
-                # externally completed landing brought the aircraft down and
-                # the firmware disarmed it.  Observed 2026-08-23: the adapter
-                # landed and disarmed on stale:odom:source_stamp while this
-                # node still reported AUTONOMY_RUNNING for a disarmed aircraft
-                # sitting on the floor.  Converge on the same terminal state
-                # an operator landing reaches.
-                #
-                # Both predicates demand fresh status, so a stale tick blocks
-                # this rather than triggering it, and it cannot fire before
-                # takeoff because the vehicle is ARMED there.  DISARMED_STOPPED
-                # is terminal, so this can never re-arm or restart autonomy.
+                # adapter fault landing or a firmware disarm brought it down.
+                # Converge on the terminal state an operator landing reaches
+                # instead of reporting AUTONOMY_RUNNING for a disarmed aircraft
+                # on the floor.  Both predicates need fresh status, so a stale
+                # tick blocks this; before takeoff the vehicle is ARMED.
                 self._airborne_latched = False
                 self._set_state(OperatorState.DISARMED_STOPPED, now)
                 message = ('OPERATOR STATE: DISARMED_STOPPED - autonomy ended '
@@ -599,10 +583,9 @@ def _pynput_key_name(key) -> Optional[str]:
     """Normalise one pynput key object to a binding name."""
     from pynput import keyboard as pynput_keyboard
 
-    # Left and right Alt both arm.  Key.alt_gr is deliberately NOT bound:
-    # on layouts that have it, AltGr is a character-composition modifier
-    # pressed while typing ordinary symbols, and arming on it would fire
-    # the critical toggle during normal typing.
+    # Left and right Alt both arm.  Key.alt_gr is not bound: on layouts that
+    # have it, AltGr is a character-composition modifier pressed while typing
+    # ordinary symbols, and binding it would fire the arm toggle during typing.
     if key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r,
                pynput_keyboard.Key.alt):
         return 'alt'
@@ -664,10 +647,10 @@ class PynputKeyboardBackend:
 
 
 def create_keyboard_backend(sink: 'queue.Queue', preferred: str = 'pynput'):
-    """Build the best available key backend, or raise with the reason.
+    """Build the key backend, or raise with the reason.
 
-    Never silently degrades to a backend that cannot see a standalone Alt
-    press: an operator who believes Alt works must actually have it.
+    Raises rather than falling back to a backend that cannot see a standalone
+    Alt press.
     """
     if preferred not in ('pynput', 'none'):
         raise ValueError(f'unknown keyboard backend {preferred!r}')
@@ -720,7 +703,7 @@ class RealOperatorControl(Node):
             'state_topic', '/real_operator/state').value)
         #: The control adapter's virtual Land service.  Using it keeps the
         #: notify_setpoints_stop -> land handover in one place instead of
-        #: giving this node a second, competing landing implementation.
+        #: giving this node a second, competing landing path.
         self.adapter_land_service = str(declare(
             'adapter_land_service', '/real_control/land_request').value)
         self.keyboard_backend_name = str(
@@ -756,9 +739,9 @@ class RealOperatorControl(Node):
         self.create_subscription(Status, status_topic, self._on_status,
                                  live_qos)
         self.create_subscription(Odometry, odom_topic, self._on_odom, live_qos)
-        # Transient-local so a late-joining algorithm still sees the gate,
-        # but consumers must additionally require freshness: a stopped
-        # heartbeat has to revoke authorization, not preserve it.
+        # Transient-local so a late-joining algorithm sees the gate; consumers
+        # still require freshness, so a stopped heartbeat revokes rather than
+        # preserves authorization.
         self.authorization_pub = self.create_publisher(
             Bool, self.authorization_topic, latched_qos)
         self.state_pub = self.create_publisher(String, state_topic,

@@ -1,18 +1,15 @@
-"""Geometry-aware projection of the Crazyflie Multi-ranger into 2-D scans.
+"""Projects the Crazyflie Multi-ranger cones into three 2-D scans.
 
-Gazebo models every directional sensor as a 7 x 7 GPU-lidar cone.  The
-ros_gz LaserScan conversion exposes only seven horizontally indexed values,
-but the original Gazebo LaserScan contains all 49 rays.  In simulation this
-node consumes those original rays through Gazebo Transport.  The ROS scans
-remain subscribed as a portable fallback; their missing vertical dimension
-is sampled across the configured field of view.
+Each Gazebo range sensor is a 7 x 7 GPU-lidar cone.  The ros_gz LaserScan
+conversion keeps only the seven horizontal values, so in simulation we read
+the full 49 rays over Gazebo Transport and fall back to the ROS scans, whose
+missing vertical dimension is then sampled across the configured FoV.
 
-Every ray is transformed through TF at its original sensor timestamp.  The
-up/down cones estimate horizontal floor and ceiling planes.  Horizontal rays
-which end on either plane are removed from marking observations, while a
-separate clearing-only scan clears no farther than the first measured or
-predicted plane intersection.  A third, unconfirmed scan feeds Collision
-Monitor so static-map plausibility checks never weaken immediate safety.
+Rays are transformed through TF at their own sensor stamp.  The up/down cones
+give horizontal floor and ceiling planes: horizontal rays ending on a plane
+are dropped from /scan (marking), /scan_clearing clears no farther than the
+first plane intersection, and /scan_safety carries every return unconfirmed
+so static-map plausibility can never weaken the collision guard.
 """
 
 from __future__ import annotations
@@ -174,9 +171,8 @@ class RangeScanMerger(Node):
             int, Optional[Tuple[Vec3, Quat]]] = {}
         self._last_published_stamp = -1
 
-        # Input callbacks must remain runnable while the projection timer is
-        # waiting briefly for timestamped TF.  They intentionally use a
-        # different group from the timer on the multi-threaded executor.
+        # Separate group from the timer: inputs must stay runnable while the
+        # timer blocks on a timestamped TF lookup.
         self._input_group = MutuallyExclusiveCallbackGroup()
         self._timer_group = MutuallyExclusiveCallbackGroup()
         sensor_qos = QoSProfile(depth=8)
@@ -341,8 +337,8 @@ class RangeScanMerger(Node):
             self._map_transform_cache[stamp_ns] = (origin, rotation)
             return transform_point(origin, rotation, endpoint)
         except Exception:
-            # The static map is explicitly secondary.  Missing map TF must
-            # not suppress a geometrically valid obstacle.
+            # The map is only a plausibility check - a missing map TF must
+            # never suppress a geometrically valid obstacle.
             self._map_transform_cache[stamp_ns] = None
             return None
 
@@ -440,14 +436,13 @@ class RangeScanMerger(Node):
         return msg
 
     def _densify_clearing(self, ranges: List[float]):
-        """Fill only the small angular gaps inside an observed sensor fan.
+        """Fill small angular gaps inside one observed sensor fan.
 
-        Roll/pitch changes the projected angle of a ray.  Without filling the
-        gap to its adjacent ray, an old marked cell can sit between the new
-        sparse beam lines forever.  The nearer of the two finite endpoints is
-        used throughout the gap, so interpolation never clears beyond either
-        observed obstacle or floor/ceiling intersection.  Gaps between the
-        four directional fans remain untouched.
+        Roll/pitch shifts each ray's projected angle, so without this an old
+        marked cell can survive forever between two sparse beam lines.  Each
+        gap is filled with the nearer of its two endpoints, so interpolation
+        never clears past an obstacle or a floor/ceiling hit.  Gaps between the
+        four fans stay untouched.
         """
         finite = [index for index, value in enumerate(ranges)
                   if math.isfinite(value)]
@@ -544,8 +539,8 @@ class RangeScanMerger(Node):
             self._insert_endpoint(clearing_ranges, endpoint, reference_origin)
         self._densify_clearing(clearing_ranges)
 
-        # One candidate per physical sensor/horizontal ray advances temporal
-        # confirmation once, even though Gazebo supplies seven vertical rays.
+        # Gazebo gives seven vertical rays per horizontal ray - confirm once
+        # per physical ray, using the nearest of them.
         nearest_by_ray: Dict[Tuple[str, int], ObstacleObservation] = {}
         for observation in obstacles:
             self._insert_endpoint(
@@ -575,10 +570,10 @@ def main():
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
-        # TF subscriptions use a re-entrant callback group.  Multiple executor
-        # threads let them fill the buffer while a bounded timestamped lookup
-        # waits in the projection timer; a single-threaded executor would
-        # starve TF and manufacture an ever-growing apparent transform lag.
+        # tf2_ros subscribes on a re-entrant group: extra threads let it keep
+        # filling the buffer while the projection timer blocks on a
+        # timestamped lookup.  Single-threaded, TF starves and the apparent
+        # transform lag grows without bound.
         executor.spin()
     except KeyboardInterrupt:
         pass

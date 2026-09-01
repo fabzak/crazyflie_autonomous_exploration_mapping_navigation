@@ -5,28 +5,26 @@ pose (z = 0, roll = pitch = 0) and then publishes
 
     map -> odom  =  (map -> base) * (base -> odom)
 
-Point ``base_frame_id`` at a frame that sits at the real flight altitude and
-that identity forces ``map -> odom`` to carry ``-z`` of the robot's height, so
-the altitude is cancelled and the drone is drawn flat on the map plane even
-though odometry says it is a metre up.
+If ``base_frame_id`` names a frame at the real flight altitude, that identity
+forces ``map -> odom`` to carry ``-z`` of the robot's height: the altitude is
+cancelled and the drone is drawn flat on the map plane while odometry still
+says it is a metre up.
 
-This node publishes a dedicated frame for AMCL to estimate instead: the robot's
-odometry pose projected onto the ground plane.
+So AMCL gets a frame of its own to estimate, the odometry pose projected onto
+the ground plane:
 
     crazyflie/odom -> cf_auto/amcl_base     x, y, yaw from odometry; z = 0,
                                             roll = pitch = 0
 
-``crazyflie/base_stabilized`` keeps its existing meaning - the robot at its
-*real* altitude, level, yaw-following - and is left untouched, so it is still
-what the sensor geometry and RViz show.  The two frames are siblings under
-``crazyflie/odom`` with distinct names, so no TF child gains a second author.
+``crazyflie/base_stabilized`` is untouched - the robot at its real altitude,
+level and yaw-following - and is still what sensor geometry and RViz use.  The
+two are siblings under ``crazyflie/odom``, so no TF child gains a second author.
 
-Because x, y and yaw are identical between the two frames, AMCL's motion model
-and its laser pose (which take only x, y and yaw) are unchanged by the switch;
-only the z that leaks into ``map -> odom`` goes away.
+AMCL's motion model and laser pose use only x, y and yaw, which are identical
+in both frames, so the switch drops the z leaking into ``map -> odom`` and
+changes nothing else.
 
-The node is TF-only: it publishes no velocity, holds no mission state and
-feeds nothing back into cf_auto.
+TF-only: no velocity, no mission state, no feedback into cf_auto.
 """
 
 import math
@@ -37,8 +35,8 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 
-# The same yaw extraction the stabilized frame uses, so the two frames can
-# never disagree about heading.
+# The same yaw extraction the stabilized frame uses, so the two frames cannot
+# disagree about heading.
 from cf_explore.cf_auto import yaw_from_quaternion
 
 DEFAULT_PLANAR_FRAME = 'cf_auto/amcl_base'
@@ -48,10 +46,9 @@ def planar_transform(odom: Odometry, odom_frame: str,
                      planar_frame: str) -> TransformStamped:
     """Project an odometry pose onto the ground plane as a TransformStamped.
 
-    Keeps x, y and yaw; drops z, roll and pitch.  The odometry message's own
-    stamp is carried through, so a TF lookup at a LaserScan's timestamp
-    resolves against the same clock the rest of the stack runs on - critical
-    under ``use_sim_time``, where wall-clock stamps would never line up.
+    Keeps x, y and yaw; drops z, roll and pitch.  The odometry stamp is carried
+    through so a TF lookup at a LaserScan timestamp resolves on the same clock;
+    wall-clock stamps would not line up under ``use_sim_time``.
     """
     rotation = odom.pose.pose.orientation
     yaw = yaw_from_quaternion(rotation.x, rotation.y, rotation.z, rotation.w)
@@ -96,8 +93,8 @@ class CfAutoPlanarFrame(Node):
         incoming = msg.header.frame_id
         if incoming and incoming != self.odom_frame and \
                 not self._warned_about_frame:
-            # Announce once: a mismatch means the transform would be published
-            # under a parent the odometry was never expressed in.
+            # Warn once: the transform would be parented to a frame the
+            # odometry is not expressed in.
             self._warned_about_frame = True
             self.get_logger().warning(
                 f'odometry is stamped in {incoming!r} but the planar frame is '

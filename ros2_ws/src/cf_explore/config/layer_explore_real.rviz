@@ -1,20 +1,16 @@
-# Live visualisation for layer_explore_real.
+# Live view for layer_explore_real, derived from the simulation mapping view
+# in crazyflie_ros2_multiranger_bringup.  Three differences:
 #
-# Derived from the proven simulation view
-# (crazyflie_ros2_multiranger_bringup/config/sim_mapping.rviz) so the real
-# workflow shows the same things.  Three deliberate differences:
+#   * the cf_auto goal/path and goal/target displays are dropped; they belong
+#     to the other algorithm and would sit empty here;
+#   * the six real Multi-ranger scans are added.  real_sensor_adapter
+#     publishes them BEST_EFFORT and RViz defaults to Reliable, so each one
+#     pins Best Effort - a mismatch shows nothing and reports no error;
+#   * TF frames are discovered, not hard-coded: the real chain is
+#     map -> world -> <robot>/odom -> <robot>/base_corrected -> range_*.
 #
-#   * the cf_auto goal/path and goal/target displays are dropped - they belong
-#     to a different algorithm and would sit permanently empty here;
-#   * the six real Multi-ranger scans are added, published BEST_EFFORT by
-#     real_sensor_adapter.  RViz defaults to Reliable, and a mismatched
-#     subscription silently shows nothing, so each one pins Best Effort;
-#   * TF frames are discovered rather than hard-coded, because the real chain
-#     is map -> world -> <robot>/odom -> <robot>/base_corrected -> range_*.
-#
-# Fixed Frame stays "map": layer_explore broadcasts a static map -> world and
-# the real launch adds world -> <robot>/odom, so the chain resolves on real
-# hardware exactly as it does in simulation.
+# Fixed Frame stays "map".  layer_explore broadcasts map -> world and the real
+# launch adds world -> <robot>/odom, so the chain resolves on hardware too.
 Panels:
   - Class: rviz_common/Displays
     Help Height: 78

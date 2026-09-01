@@ -1,31 +1,19 @@
 """Scheduling isolation of the 20 Hz control tick.
 
-Why this file exists
---------------------
 ``real_safety_watchdog`` latches ``stale:command:receive_time`` when
 ``/real_control/cmd_vel_request`` goes quiet for longer than
-``command_timeout_sec`` (0.25 s in ``config/real_safety.yaml``).  ``_tick``
-runs at 20 Hz and publishes a command on every path, so the contract is
-"a command at least every 50 ms".
+``command_timeout_sec`` (0.25 s in ``config/real_safety.yaml``), and ``_tick``
+publishes on every path, so the contract is a command every 50 ms.
 
-``tf2_ros.Buffer.can_transform`` implements its timeout by calling
-``sleep(0.02)`` in a loop **on the calling thread** — its own source carries a
-TODO saying it cannot currently do better.  So one geometry pass that misses
-several exact-stamp transforms parks its thread for hundreds of milliseconds.
-While ``_tick`` shared the node default mutually-exclusive callback group with
-``_process_sensor_geometry``, that wait blocked the control tick outright.
+``tf2_ros.Buffer.can_transform`` implements its timeout by sleeping on the
+calling thread, so one geometry pass that misses several exact-stamp transforms
+parks that thread for hundreds of milliseconds.  Measured on hardware, aircraft
+disarmed and nothing flying: p99 116 ms, max 385 ms, breaching the 250 ms budget
+about once every 30 s.
 
-Measured on real hardware, aircraft **disarmed**, start gate closed, nothing
-else running: p99 116 ms, max 385 ms, three breaches of the 250 ms budget in
-90 s — about one every 30 s with nothing flying.  It aborted three real
-flights (`select3` +4.6 s, `attempt1` +2.13 s) before it was understood.
-
-The fix is scheduling isolation, not a shorter TF timeout: a shorter timeout
-only makes the breach rarer and discards usable observations.
-
-The first two tests are a behavioural harness with a negative control.  The
-"shared group" case must FAIL the budget — that is what proves the harness can
-actually see the defect, so the isolated case passing means something.
+Separate callback groups fix it; a shorter TF timeout only makes the breach
+rarer and discards usable observations.  The first two tests are a harness with
+a negative control: the shared-group case must fail the budget.
 """
 
 import inspect
@@ -45,18 +33,18 @@ from cf_explore.layer_explore import LayerExplorer
 #: The watchdog budget the control tick must meet.
 COMMAND_TIMEOUT_S = 0.25
 CONTROL_PERIOD_S = 0.05
-#: Long enough to blow the budget on its own, standing in for a geometry pass
-#: that misses several exact-stamp transforms.
+#: Long enough to blow the budget alone - stands in for a geometry pass that
+#: misses several exact-stamp transforms.
 GEOMETRY_BLOCK_S = 0.30
 HARNESS_RUN_S = 2.0
 
 
 def _control_gaps_ms(share_one_group: bool) -> list:
-    """Run a control timer beside a deliberately blocking geometry timer.
+    """Run a control timer beside a blocking geometry timer.
 
-    Mirrors the node's wiring: a 20 Hz control timer and a slow geometry timer,
-    driven by a MultiThreadedExecutor.  ``share_one_group`` reproduces the old
-    defective arrangement so the harness can be shown to detect it.
+    Mirrors the node's wiring: a 20 Hz control timer and a slow geometry timer
+    on a MultiThreadedExecutor.  ``share_one_group`` reproduces the shared-group
+    arrangement the harness must be able to detect.
     """
     context = rclpy.Context()
     rclpy.init(context=context)
@@ -89,11 +77,9 @@ def _control_gaps_ms(share_one_group: bool) -> list:
 
 
 def test_blocking_geometry_starves_control_when_the_group_is_shared():
-    """Negative control: without isolation the budget IS breached.
-
-    If this ever stops failing the budget, the harness has gone blind and the
-    companion test below proves nothing.
-    """
+    """Negative control: without isolation the budget is breached.  If this
+    stops failing, the harness is blind and the companion test proves
+    nothing."""
     gaps = _control_gaps_ms(share_one_group=True)
     assert gaps, 'harness produced no control ticks at all'
     assert max(gaps) > COMMAND_TIMEOUT_S * 1000.0, (
@@ -102,7 +88,7 @@ def test_blocking_geometry_starves_control_when_the_group_is_shared():
 
 
 def test_blocking_geometry_cannot_starve_an_isolated_control_tick():
-    """The fix: separate groups keep the 20 Hz tick inside its budget."""
+    """Separate groups keep the 20 Hz tick inside its budget."""
     gaps = _control_gaps_ms(share_one_group=False)
     assert gaps, 'harness produced no control ticks at all'
     worst = max(gaps)
@@ -117,7 +103,7 @@ def test_blocking_geometry_cannot_starve_an_isolated_control_tick():
 
 @pytest.fixture(scope='module')
 def explorer():
-    """A real LayerExplorer, so these assert wiring rather than source text."""
+    """A real LayerExplorer, so these assert wiring, not source text."""
     rclpy.init()
     node = LayerExplorer()
     try:
@@ -162,8 +148,8 @@ def test_tf_callbacks_can_run_while_geometry_waits(explorer):
     """A transform wait is pointless if its own delivery is queued behind it.
 
     tf2_ros already puts /tf and /tf_static in a ReentrantCallbackGroup for
-    exactly this reason; pin that it is distinct from both control and
-    geometry so the assumption stays true if the listener is ever rewired.
+    that reason; pinning it distinct from control and geometry keeps the
+    assumption true if the listener is ever rewired.
     """
     listener_group = explorer.tf_listener.group
     assert isinstance(listener_group, ReentrantCallbackGroup)
@@ -211,7 +197,7 @@ def test_no_automatic_arm_path_exists_in_the_algorithm(explorer):
 
 
 def test_first_frontier_halt_semantics_are_untouched(explorer):
-    """Isolation must not have disturbed the bounded-validation latch."""
+    """Isolation must not disturb the bounded-validation latch."""
     source = inspect.getsource(LayerExplorer._set_state)
     assert 'halt_after_state' in source
     assert 'VALIDATION_HOLD' in source

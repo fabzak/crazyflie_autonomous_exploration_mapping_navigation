@@ -7,16 +7,10 @@ cf_auto has two ways to change layer:
   FALLBACK  the configured ``transition_*`` table, consulted by
             ``_plan_target`` only where ``_static_route`` returned None.
 
-``_validate_waypoints`` used to check the configured table unconditionally, so
-the typed placeholder in ``cf_auto_real.yaml`` (a degenerate ``1->1`` hop at
-``(0.0, 0.0)``) could abort an otherwise valid real mission before takeoff
-merely because the origin cell is unknown on a real map - even though the
-static planner owned every hop and would never read that table.
-
-These tests pin the split: unreachable fallback configuration must not gate a
-mission, and a reachable one must still be checked exactly as strictly as
-before.  Nothing here starts a ROS graph; ``make_node`` is the shipped class
-with only its ROS plumbing stubbed.
+So an unreachable fallback entry - the degenerate ``1->1`` placeholder at the
+origin in ``cf_auto_real.yaml``, whose cell is unknown on a real map - must not
+abort a mission the static planner owns, while a reachable one is checked just
+as strictly.  No ROS graph is started.
 """
 
 import pytest
@@ -43,7 +37,7 @@ def grid_with(cell_state_at_origin=FREE, inflation_cells=0, size=20):
 def validation_node(multilayer_routing, layer_grids, transitions,
                     grid, waypoints=None, layer_index=0,
                     layer_ids=(1, 2), layer_heights=(0.5, 1.0)):
-    """A node parked exactly where ``_validate_waypoints`` is called."""
+    """A node parked where ``_validate_waypoints`` is called."""
     node = make_node()
     node.layer_ids = list(layer_ids)
     node.layer_heights = list(layer_heights)
@@ -78,11 +72,7 @@ def errors(node):
 
 @pytest.mark.parametrize('origin_state', [BLOCKED, UNKNOWN])
 def test_unused_placeholder_does_not_reject_a_valid_mission(origin_state):
-    """Static planner active + complete cache: the table is unreachable.
-
-    This is the real-hardware case exactly: the (0, 0) placeholder sits on a
-    cell that a real map reports as occupied or never observed.
-    """
+    """Static planner active + complete cache: the table is unreachable."""
     grid = grid_with(origin_state)
     node = validation_node(
         multilayer_routing=True,
@@ -234,7 +224,7 @@ def test_waypoint_layer_assignment_validation_is_untouched():
 
 
 def test_no_transition_coordinate_is_special_cased_in_the_source():
-    """The fix must be architectural, never a hard-coded (0, 0) exemption."""
+    """The gate is on reachability, not a hard-coded (0, 0) exemption."""
     import inspect
 
     source = inspect.getsource(CfAuto._validate_waypoints)
@@ -260,7 +250,7 @@ def test_the_gate_derives_from_routing_state_not_from_the_point():
 
 
 def test_any_placeholder_coordinate_behaves_identically():
-    """Genericity: nothing about (0, 0) in particular is privileged."""
+    """No transition coordinate is privileged, (0, 0) included."""
     for point in [(0.0, 0.0), (0.5, 0.5), (1.9, 0.3)]:
         grid = grid_with(FREE)
         cell = grid.to_cell(*point)
@@ -285,7 +275,7 @@ def test_any_placeholder_coordinate_behaves_identically():
 
 
 def test_real_yaml_transition_table_is_only_a_typed_placeholder():
-    """It must stay a placeholder and never become real mission data."""
+    """It must stay a placeholder, not become real mission data."""
     from pathlib import Path
 
     import yaml

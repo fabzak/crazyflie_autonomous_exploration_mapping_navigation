@@ -1,24 +1,13 @@
-"""Layer-1 completion must save through the production path and not ascend.
+"""``halt_after_layer``: complete and save a layer, but do not climb to the next.
 
-The 2026-08-26 experiment explores Layer 1 to genuine completion and saves the
-first real production map, but must not climb to Layer 2.  ``_finish_layer``
-otherwise makes those one indivisible step: it calls ``save_layer`` and then,
-because ``max_layers=2`` leaves a second layer in the plan, immediately enters
-``ASCEND``.
+``_finish_layer`` makes saving and ascending one step, and neither existing
+bound separates them: ``halt_after_state`` is keyed on the source state and
+``_finish_layer`` runs inside ``_st_select``, so halting after SELECT stops at
+the first frontier, while ``max_layers=1`` would drop the second altitude from
+the derived ``['0.2 m', '0.4 m']`` plan.  Default 0 leaves simulation unchanged.
 
-``halt_after_state`` cannot separate them.  It is keyed on the *source* state
-and ``_finish_layer`` runs inside ``_st_select``, so halting after SELECT would
-stop the mission at its very first frontier instead of at layer completion.
-``max_layers=1`` would work but destroys the ``['0.2 m','0.4 m']`` derivation
-the experiment exists to keep exercising.
-
-Hence ``halt_after_layer``: layer N is still mapped, still completed and still
-saved through the real production code, but the climb to N+1 is not started.
-Default 0 keeps simulation behaviour bit-for-bit unchanged.
-
-These tests drive the REAL ``_finish_layer`` and the REAL ``GridMap.save_layer``
-against a temporary directory, so the artifacts asserted here are the artifacts
-a flight produces.
+The tests drive the real ``_finish_layer`` and ``GridMap.save_layer`` into a
+temporary directory, so the artifacts asserted are the ones a flight produces.
 """
 
 import json
@@ -206,7 +195,7 @@ def test_the_gate_does_not_fire_before_its_own_layer(tmp_path):
 
 
 def test_the_final_layer_still_lands_without_the_gate(tmp_path):
-    """Exhausting the plan must behave exactly as before."""
+    """With the gate off, an exhausted plan still ends in LAND."""
     node = _explorer(tmp_path, halt_after_layer=0, layer=2)
     LayerExplorer._finish_layer(node)
     assert node.transitions == ['LAND']

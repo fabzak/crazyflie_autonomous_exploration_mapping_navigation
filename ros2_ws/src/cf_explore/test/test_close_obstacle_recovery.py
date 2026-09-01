@@ -101,10 +101,9 @@ def test_recovery_command_holds_altitude_and_yaw():
 
 # ── recovery altitude semantics ───────────────────────────────────────────
 #
-# Altitude safety is judged against the altitude the active layer is supposed
-# to be flown at.  Climbing from a sagged 0.904 m back to a 1.000 m layer is
-# the controller doing its job, and previously consumed all three attempts in
-# about 100 ms because the reference was latched at the sagged entry height.
+# Altitude is judged against the layer target, not the entry height.  Climbing
+# from a sagged 0.904 m back to a 1.000 m layer is the controller working; with
+# the reference latched at entry it burned all three attempts in ~100 ms.
 
 # Production defaults.  The band is measured against the layer target, so it
 # has to contain the controller's steady-state offset: the validation run held
@@ -134,7 +133,7 @@ def test_convergence_toward_layer_target_is_not_drift_failure():
 
 
 def test_reaching_the_layer_target_from_below_is_never_positive_drift():
-    # The exact regression: entry 0.904 m, later 1.004 m, layer target 1.000 m.
+    # entry 0.904 m, later 1.004 m, layer target 1.000 m.
     _, reason = altitude_step(1.004, 5.0, None)
     assert reason == ''
 

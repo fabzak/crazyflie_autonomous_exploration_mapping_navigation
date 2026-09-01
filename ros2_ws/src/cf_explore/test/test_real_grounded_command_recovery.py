@@ -1,24 +1,14 @@
 """A pre-mission command gap must not latch the safety watchdog.
 
-Observed on hardware 2026-08-28.  ``cf_auto_real`` reached the normal grounded
-pre-mission wait - RViz up, three real layers discovered, mission validated,
-Crazyflie connected, cf_auto sitting in ``WAIT_FOR_INITIAL_POSE`` - and the
-watchdog logged::
+On the ground, disarmed, cf_auto sits in ``WAIT_FOR_INITIAL_POSE`` and there is
+no continuous setpoint to expect yet, but a gap there latched
+``stale:command:receive_time`` - and a latched permit stays false for the rest
+of the launch.
 
-    Real motion permit healthy.
-    REAL SAFETY FAULT LATCHED: stale:command:receive_time
-
-Once latched the permit is false forever, so the rest of the launch was
-unusable even though nothing unsafe had happened: on the ground, disarmed,
-there is no continuous setpoint to expect yet.
-
-The fix is a per-blocker recoverability rule keyed on firmware supervisor
-state, never on timing.  A missing or stale command is recoverable only while
-the supervisor reports neither IS_ARMED nor IS_FLYING; from the operator's
-Left Alt onward it latches exactly as before, which is what keeps the
-arm-to-liftoff window fail-closed.
-
-These tests are pure: no ROS graph, no radio, no hardware.
+Recoverability is keyed on firmware supervisor state, not on timing: a missing
+or stale command is recoverable only while the supervisor reports neither
+IS_ARMED nor IS_FLYING.  From Left Alt onward it latches, which keeps the
+arm-to-liftoff window fail-closed.  No ROS graph is started.
 """
 
 import pytest
@@ -76,7 +66,7 @@ def status(supervisor_info=GROUNDED_DISARMED, **overrides):
 
 
 def feed_all(evaluator, at, *, supervisor=GROUNDED_DISARMED, command_at=None):
-    """Refresh every signal at ``at``; the command may lag deliberately."""
+    """Refresh every signal at ``at``; the command may be given an older time."""
     evaluator.note_signal('command', at if command_at is None else command_at)
     for signal in SIGNAL_ORDER:
         if signal in ('command', 'status'):
@@ -116,7 +106,7 @@ def test_a_complete_fresh_input_set_issues_the_permit():
 
 
 def test_grounded_disarmed_command_staleness_does_not_latch():
-    """The exact hardware failure: a pre-mission gap must stay recoverable."""
+    """A pre-mission gap must stay recoverable."""
     evaluator = SafetyEvaluator(config())
     healthy(evaluator)
 
@@ -295,7 +285,7 @@ def test_losing_status_alongside_the_command_still_latches():
     assert decision.latched is True
 
 
-# ── 9. the pre-existing grounded cannot_fly recovery is untouched ─────────
+# ── 9. grounded cannot_fly stays recoverable ──────────────────────────────
 
 
 def test_grounded_cannot_fly_is_still_recoverable():
@@ -354,7 +344,7 @@ def test_an_airborne_permit_loss_still_enters_the_landing_handover():
 
 
 def test_recoverability_is_decided_only_from_supervisor_state():
-    """Never from timing, and never from a hardcoded reason string."""
+    """Not from timing, and not from a hardcoded reason string."""
     evaluator = SafetyEvaluator(config())
 
     evaluator._is_flying, evaluator._is_armed = False, False
@@ -370,7 +360,7 @@ def test_recoverability_is_decided_only_from_supervisor_state():
     assert not evaluator._blocker_is_recoverable('stale:command:receive_time')
     assert not evaluator._blocker_is_recoverable('supervisor:cannot_fly')
 
-    # Anything not explicitly listed stays non-recoverable.
+    # Anything not listed stays non-recoverable.
     evaluator._is_flying, evaluator._is_armed = False, False
     for blocker in ('stale:odom:receive_time', 'missing:status',
                     'future_receive_time:command', 'no_floor_lock:down',

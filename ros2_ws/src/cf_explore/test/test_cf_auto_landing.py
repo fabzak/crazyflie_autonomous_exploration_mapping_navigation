@@ -1,11 +1,9 @@
 """Landing tests for ``cf_auto``: decision table, freshness gate, transitions.
 
-Nothing here starts a ROS graph.  ``rclpy.init`` is never called, no executor
-spins and no topic is created; the state-transition tests drive the node's real
-``_tick``/``_st_*`` methods on an instance built with ``object.__new__`` whose
-clock, logger and publishers are stubs.  The transitions asserted below are
-therefore the ones the flying node actually takes, not a reimplementation of
-them, and the whole file runs in milliseconds under plain ``pytest``.
+No ROS graph is started.  The transition tests drive the real ``_tick``/
+``_st_*`` methods on an ``object.__new__`` instance whose clock, logger and
+publishers are stubs, so the transitions asserted are the ones the flying node
+takes.
 """
 
 import math
@@ -110,7 +108,7 @@ def test_single_noisy_in_band_sample_cannot_end_the_flight():
     assert land.update(0.05, 100.0) == LAND_CONFIRM
     assert land.update(0.60, 100.1) == LAND_DESCEND       # spike, debounce resets
     assert land.update(0.05, 100.4) == LAND_CONFIRM
-    # 0.4 s after the *second* entry into the band, not the first.
+    # 0.4 s after the second entry into the band, not the first.
     assert land.update(0.05, 100.6) == LAND_CONFIRM
     assert land.update(0.05, 100.9) == LAND_TOUCHDOWN
 
@@ -182,7 +180,7 @@ def test_terminal_actions_latch_and_ignore_later_readings():
         land.update(stimulus, 100.0)
         land.update(stimulus, 102.0)
         assert land.action == expected
-        # Anything at all afterwards, including a perfectly healthy reading.
+        # Anything afterwards, including a healthy reading, is ignored.
         assert land.update(0.50, 103.0) == expected
         assert land.update(None, 104.0) == expected
         assert land.commanded_vz() == 0.0
@@ -244,12 +242,11 @@ class Recorder:
 
 
 def make_node(**overrides):
-    """A real ``CfAuto`` with only its ROS plumbing replaced by stubs.
+    """A real ``CfAuto`` with only its ROS plumbing stubbed.
 
-    ``__init__`` is skipped deliberately: it would declare parameters and create
-    publishers, which needs a live context.  Every attribute the COMPLETE/LAND
-    path reads is set here instead, so the methods under test are the shipped
-    ones, unmodified.
+    ``__init__`` is skipped because it declares parameters and creates
+    publishers, which needs a live context; every attribute the LAND/COMPLETE
+    path reads is set here instead.
     """
     node = object.__new__(CfAuto)
     clock = FakeClock()
@@ -292,8 +289,8 @@ def make_node(**overrides):
     node._down_stamp_ns = clock.now().nanoseconds
 
     # Live-bypass defaults: no bypass in flight.  Only _bypass_active is read
-    # on the ordinary FOLLOW path (the rest is behind a short circuit), but the
-    # whole block is set so bypass tests can override single fields.
+    # on the ordinary FOLLOW path; the rest is here so bypass tests can
+    # override one field at a time.
     node._bypass_active = False
     node._bypass_origin_z = 0.5
     node.ascend_tolerance = 0.05
@@ -463,7 +460,7 @@ def test_terminal_states_command_nothing_at_all():
 
 
 def test_landed_is_a_handover_not_a_resting_place():
-    """Touchdown must earn COMPLETE, and must still command exactly zero."""
+    """Touchdown must earn COMPLETE and still command zero velocity."""
     node = make_node(state='LANDED', _summary_logged=True)
     tick(node)
     twist = node.cmd_pub.published[-1]
@@ -475,18 +472,13 @@ def test_landed_is_a_handover_not_a_resting_place():
 
 
 # ---------------------------------------------------------------------------
-# Landing must be driven by MISSION LENGTH, never by a waypoint's identity.
-# Each case below builds a different N and asserts the same rule, so a
-# regression that hardcodes "6", "index 5" or "layer 4" fails here.
+# Landing is decided by mission length, not by a waypoint's identity: each case
+# below uses a different N, so a hardcoded "6" or "index 5" fails here.
 # ---------------------------------------------------------------------------
 
 def mission_node(count, final_layer_z=0.5, final_reached=True, reached_all=True):
-    """A node that has just processed the whole configured mission.
-
-    ``count`` waypoints, results recorded exactly as the flight states record
-    them, and the state machine parked in SETTLE where the land/end decision
-    is made.
-    """
+    """A node that has just finished a ``count``-waypoint mission, parked in
+    SETTLE where the land/end decision is made."""
     waypoints = [(float(i), 0.0, 0.5) for i in range(count - 1)]
     waypoints.append((float(count), 0.0, final_layer_z))
     results = []
@@ -523,7 +515,7 @@ def test_landing_trigger_does_not_depend_on_waypoint_being_number_six():
     six._st_settle()
     two._st_settle()
     assert six.state == two.state == 'LAND'
-    # ... and waypoint 6 in a LONGER mission is just an ordinary waypoint.
+    # ... and waypoint 6 in a longer mission is just an ordinary waypoint.
     ten = mission_node(10)
     ten.wp_index = 6
     ten._results = ten._results[:6]
@@ -581,7 +573,7 @@ def test_touchdown_earns_complete_and_the_success_message_counts_actual_n():
 
 
 def test_complete_before_touchdown_is_impossible_via_settle():
-    """SETTLE may only reach COMPLETE directly when landing is NOT warranted."""
+    """SETTLE may reach COMPLETE directly only when landing is not warranted."""
     ok = mission_node(5)
     ok._st_settle()
     assert ok.state == 'LAND'          # success path must go through LAND

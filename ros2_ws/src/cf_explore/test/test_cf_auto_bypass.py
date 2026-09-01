@@ -1,11 +1,7 @@
-"""Gate 4/5: live unmapped-obstacle vertical probe, local bypass and return.
+"""Live unmapped-obstacle vertical probe, local bypass and return.
 
-The numbered comments map onto the acceptance list for these two gates so a
-reviewer can see at a glance which requirement each test discharges.
-
-Everything here is a unit test of the shipped code paths.  None of it is
-evidence that the manoeuvre has been flown - see README.md for what has and has
-not been validated in Gazebo.
+Test numbers follow the Gate 4/5 acceptance list.  Unit tests only: nothing
+here is evidence that the manoeuvre has been flown (see README.md).
 """
 
 import math
@@ -24,7 +20,7 @@ from test.test_layer_route import make_grid, open_rows, wall_row_grid
 
 @pytest.fixture(autouse=True)
 def record_states(monkeypatch):
-    """Record every state transition, exactly as the multilayer tests do."""
+    """Record every state transition, as the multilayer tests do."""
     original = CfAuto._set_state
 
     def recording(self, state, reason=''):
@@ -42,8 +38,8 @@ def states_entered(node):
 def make_scan(bearing_ranges=None, n_bins=360, stamp_ns=0):
     """A /scan_safety-shaped LaserScan with returns at chosen bearings.
 
-    Bins not named in ``bearing_ranges`` hold ``inf`` - which, exactly as on the
-    real sensor, means either "nothing seen" or "never measured".
+    Bins not named in ``bearing_ranges`` hold ``inf``, which on the real sensor
+    means either "nothing seen" or "never measured".
     """
     increment = 2.0 * math.pi / n_bins
     ranges = [math.inf] * n_bins
@@ -229,8 +225,8 @@ def plan_node(**overrides):
 
 
 def test_1e_sealed_corridor_in_plan_arms_a_bypass_after_live_marking():
-    """Gazebo showed marking a live obstacle can seal the only corridor, so
-    A* fails in PLAN rather than in FOLLOW.  That earns the same probe."""
+    """Marking a live obstacle can seal the only corridor, so A* fails in PLAN
+    rather than in FOLLOW - which earns the same probe."""
     node = plan_node(replans=1)
     node._st_plan()
     assert 'VERTICAL_PROBE' in states_entered(node)
@@ -376,12 +372,12 @@ def test_10b_one_blocked_or_stale_sample_resets_the_evidence():
 
 
 def test_10c_uncovered_bearing_is_not_evidence_of_clearance():
-    """inf in an unsensed bin must never read as 'clear'."""
+    """inf in an unsensed bin must not read as 'clear'."""
     node = armed()
     # 45 deg sits between the front and left cones: not covered.
     assert bypass_geometry.bearing_is_covered(math.radians(45.0)) is False
     assert node._forward_clearance(math.radians(45.0)) is None
-    # dead ahead is covered, and an empty scan there really does mean clear
+    # dead ahead is covered, so an empty scan there does mean clear
     assert node._forward_clearance(0.0) == math.inf
 
 
@@ -529,12 +525,11 @@ def test_20_renewed_obstruction_resets_the_clear_hold():
 # =============================================================================
 
 def test_20b_crossing_displacement_is_not_charged_to_the_drift_budget():
-    """Regression, found in Gazebo scenario G.
+    """The crossing moves the drone ~0.76 m from the probe anchor by design.
 
-    The crossing deliberately moves the drone ~0.76 m from the probe anchor.
-    Measuring the post-crossing XY hold against that stale anchor charged the
-    whole intended manoeuvre to the 0.30 m drift budget, so the return tripped
-    on its very first tick and the drone landed instead of coming home.
+    Measuring the post-crossing hold against that stale anchor charges the whole
+    manoeuvre to the 0.30 m drift budget, so the return trips on its first tick
+    and lands instead of coming home.  Re-anchor before returning.
     """
     node = armed(altitude=0.70)
     node.state = 'LOCAL_BYPASS_CROSS'
@@ -551,7 +546,7 @@ def test_20b_crossing_displacement_is_not_charged_to_the_drift_budget():
     assert node._bypass_anchor_xy == pytest.approx((0.76, 0.0))
     assert node._bypass_max_excursion == pytest.approx(0.0)
 
-    # The return must now actually descend rather than abort on false drift.
+    # The return must descend rather than abort on false drift.
     node._st_return_to_original_altitude()
     assert node.state == 'RETURN_TO_ORIGINAL_ALTITUDE'
     assert node.cmd_pub.published[-1].linear.z < 0.0
@@ -721,7 +716,7 @@ def test_30_failure_to_relocalize_is_bounded():
 
 
 def test_30b_a_failed_bypass_off_layer_returns_then_lands():
-    """5.3: never resume the mission from a temporary altitude."""
+    """Never resume the mission from a temporary altitude."""
     node = armed(altitude=0.8)
     node._bypass_failed('no candidate altitude was clear')
     assert node.state == 'RETURN_TO_ORIGINAL_ALTITUDE'

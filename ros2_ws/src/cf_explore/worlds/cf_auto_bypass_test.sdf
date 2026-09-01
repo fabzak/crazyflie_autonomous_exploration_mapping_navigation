@@ -1,12 +1,11 @@
 <?xml version="1.0" ?>
-<!-- TEST-ONLY world for the live vertical-bypass acceptance runs (scenario G).
-     Generated from the COMMITTED crazyflie_world.sdf - the version the saved
-     maps in ros2_ws/map/ were built from - plus exactly one unmapped
-     partial-height barrier.  The production world is NOT modified and is still
-     the launch default; select this one with:
+<!-- Test-only world for the live vertical-bypass acceptance runs (scenario G).
+     Copied from the committed crazyflie_world.sdf - the version the saved maps
+     were built from - plus one unmapped partial-height barrier.  The normal
+     world is untouched and stays the launch default; select this one with:
        ros2 launch cf_explore cf_auto.launch.py world:=<abs path to this file>
-     Deliberately excludes the uncommitted full-height corridor wall, so the
-     barrier below is the only object the saved maps do not know about. -->
+     The uncommitted full-height corridor wall is left out, so the barrier
+     below is the only object the saved maps do not know about. -->
 <sdf version="1.8">
   <world name="demo">
 
@@ -196,33 +195,30 @@
 
 
     <!-- ================================================================= -->
-    <!-- TEST-ONLY unmapped obstacle for acceptance scenario G.            -->
+    <!-- Test-only unmapped obstacle for acceptance scenario G.            -->
     <!--                                                                   -->
-    <!-- Partial-height barrier across the x = 11 corridor.  Present in NO  -->
-    <!-- saved map, so cf_auto's layer-1 A* plans straight through it and   -->
-    <!-- only the live rangers ever see it.                                -->
-    <!--                                                                   -->
-    <!-- Geometry chosen so the CURRENT safety policy has one unambiguous   -->
-    <!-- solution.  No margin was relaxed to make it fit:                   -->
-    <!--   top z = 0.60 m, floor to 0.60 m, 0.20 m thick, 25 m wide.        -->
-    <!--   * layer-1 flight altitude is 0.50 m (base_footprint), so the      -->
-    <!--     barrier top is 0.10 m ABOVE the airframe: it physically         -->
-    <!--     blocks and cannot be overflown by accident.                     -->
-    <!--   * it reaches the floor, so both downward probe candidates         -->
-    <!--     (0.40 m and 0.30 m) are genuinely blocked as well.              -->
-    <!--   * the horizontal ranger cone is 27 deg (13.5 deg half-angle), so  -->
-    <!--     at the required 0.60 m forward clearance the beam reaches       -->
-    <!--     0.60*tan(13.5deg) = 0.144 m below the sensor, which itself sits -->
-    <!--     0.0374 m above base_footprint.  A candidate altitude z          -->
-    <!--     therefore sees down to z - 0.107 m at that range:               -->
-    <!--         z = 0.60 -> 0.493 m < 0.60 top  => detected, rejected       -->
-    <!--         z = 0.70 -> 0.593 m < 0.60 top  => detected, rejected       -->
-    <!--         z = 0.80 -> 0.693 m > 0.60 top  => CLEAR, accepted          -->
-    <!--     so the accepted candidate is 0.80 m, leaving 0.20 m of real     -->
-    <!--     physical clearance over the barrier.                            -->
-    <!--   * climbing 0.50 -> 0.80 m needs 0.30 + 0.35 m headroom = 0.65 m;  -->
-    <!--     the ceiling is at 2.50 m, so about 2.0 m is available.          -->
-    <!--   * 25 m wide: the drone must cross OVER it, never round an edge.   -->
+    <!-- Partial-height barrier across the x = 11 corridor, present in no   -->
+    <!-- saved map: layer-1 A* plans straight through it and only the live  -->
+    <!-- rangers see it.  The geometry leaves the safety policy one         -->
+    <!-- solution, with no margin relaxed to make it fit:                   -->
+    <!--   floor up to z = 0.60 m, 0.20 m thick, 25 m wide.                 -->
+    <!--   * layer-1 altitude is 0.50 m (base_footprint), so the top is     -->
+    <!--     0.10 m above the airframe: it blocks, and cannot be overflown  -->
+    <!--     by accident.                                                   -->
+    <!--   * it reaches the floor, so both downward probe candidates        -->
+    <!--     (0.40 m and 0.30 m) are blocked as well.                       -->
+    <!--   * the horizontal cone is 27 deg (13.5 deg half-angle), so at the -->
+    <!--     required 0.60 m forward clearance the beam reaches             -->
+    <!--     0.60*tan(13.5deg) = 0.144 m below the sensor, which sits       -->
+    <!--     0.0374 m above base_footprint.  A candidate altitude z sees    -->
+    <!--     down to z - 0.107 m at that range:                             -->
+    <!--         z = 0.60 -> 0.493 m < 0.60 top  => detected, rejected      -->
+    <!--         z = 0.70 -> 0.593 m < 0.60 top  => detected, rejected      -->
+    <!--         z = 0.80 -> 0.693 m > 0.60 top  => clear, accepted         -->
+    <!--     so 0.80 m is accepted, 0.20 m of clearance over the barrier.   -->
+    <!--   * climbing 0.50 -> 0.80 m needs 0.30 + 0.35 m headroom = 0.65 m; -->
+    <!--     the ceiling is at 2.50 m, so about 2.0 m is available.         -->
+    <!--   * 25 m wide, so the drone must cross over it, not round an edge. -->
     <!-- ================================================================= -->
     <model name="bypass_test_partial_barrier">
       <static>true</static>

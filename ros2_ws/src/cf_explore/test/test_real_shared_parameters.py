@@ -31,8 +31,6 @@ def test_real_parameter_files_override_shared_platform_values():
     auto_config = (PACKAGE_ROOT / 'config' / 'cf_auto_real.yaml')
 
     if not layer_config.exists() or not auto_config.exists():
-        # The config workstream creates these files concurrently. The final suite
-        # requires them; a focused shared-core run may precede that integration.
         return
 
     import yaml
@@ -46,9 +44,9 @@ def test_real_parameter_files_override_shared_platform_values():
             'ascend_min_headroom_m', 'takeoff_min_height_m',
             'takeoff_overshoot_m', 'body_frame'):
         assert key in layer_params
-    # layer_ceiling_clearance_m is deliberately NOT overridden any more: a
-    # clearance larger than the room was how the staged first flight forced a
-    # single layer.  The real profile now takes the shared default.
+    # layer_ceiling_clearance_m is not overridden: a clearance larger than the
+    # room collapses the stack to one layer.  The real profile takes the
+    # shared default.
     assert 'layer_ceiling_clearance_m' not in layer_params
     assert 'takeoff_min_height_m' in auto_params
     assert 'takeoff_overshoot_m' in auto_params

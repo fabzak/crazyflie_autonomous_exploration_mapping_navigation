@@ -1,17 +1,14 @@
 """The legacy Crazyflie pitch inversion, and its removal.
 
-Measured on hardware 2026-08-22 (props off, drone hand-held over a floor):
-holding the airframe nose-down about 26 deg produced ``odom`` pitch of
-**-26 deg**, and the front ranger's ray, rotated through the live TF chain,
-came out with a **positive** world-frame z -- pointing up while the nose
-pointed down.  Two independent ranger witnesses confirmed the tilt direction:
-the down ranger read 0.65 m against a level 0.612 m (= 0.612/cos(26 deg)), and
-the front ranger fell from 1.29 m to 1.02 m as it swung toward the floor.
+REP-103 is X forward, Y left, Z up, so a positive rotation about +Y maps x_hat
+to (cos, 0, -sin): positive pitch is nose down.  The firmware stores the
+opposite (``kalman_core.c``: ``.pitch = -pitch*RAD_TO_DEG``) and Crazyswarm2's
+odom callback passes it through unchanged.
 
-REP-103 uses X forward, Y left, Z up, so a rotation about +Y by a positive
-angle maps x_hat to (cos, 0, -sin): positive pitch is nose DOWN.  The firmware
-stores the opposite (``kalman_core.c``: ``.pitch = -pitch*RAD_TO_DEG``) and
-Crazyswarm2's odom callback passes that through unchanged.
+Measured props-off, nose down about 26 deg: odom pitch -26 deg, and the front
+ranger's ray came out of the TF chain with positive world z -- pointing up
+while the nose pointed down.  Cross-checked by the down ranger reading 0.65 m
+for a level 0.612 m (= 0.612/cos(26 deg)).
 """
 
 import math
@@ -54,8 +51,8 @@ def test_correction_flips_only_pitch():
 
 
 def test_measured_nose_down_case_now_projects_the_ray_downward():
-    """The exact hardware measurement, before and after correction."""
-    # What /odom actually published while the nose was physically down 26 deg.
+    """The hardware measurement, before and after correction."""
+    # What /odom published while the nose was down 26 deg.
     published = quaternion_from_rpy(
         math.radians(0.5), math.radians(-26.0), math.radians(0.0))
     assert forward_axis(published)[2] > 0.4, (

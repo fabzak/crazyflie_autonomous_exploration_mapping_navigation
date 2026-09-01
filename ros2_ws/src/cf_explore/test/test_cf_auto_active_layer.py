@@ -1,8 +1,7 @@
 """The /cf_auto/active_layer diagnostic.
 
-It exists so RViz can show which saved layer is live.  The invariant that
-matters is that it is an *output*: cf_auto must publish it and never read it,
-and adding it must not perturb a single control decision.
+RViz uses it to show which saved layer is live.  It is output-only: cf_auto
+publishes it, never reads it, and publishing must not affect a control decision.
 """
 
 import pytest
@@ -80,10 +79,8 @@ def test_a_downward_change_is_reported_too():
 # --------------------------------------------------------------------------
 
 def test_the_published_value_is_the_external_layer_id_not_the_index():
-    """cf_auto keeps a 0-based index and a 1-based configured id side by side.
-
-    Publishing the index would silently be off by one for every layer.
-    """
+    """cf_auto keeps a 0-based index and a 1-based configured id side by side,
+    so publishing the index would be off by one for every layer."""
     node = node_on_layer()
     node.layer_ids = [1, 2, 3, 4]
     node.layer_index = 1                   # 0-based position
@@ -117,7 +114,7 @@ def test_cf_auto_never_subscribes_to_its_own_diagnostic():
 
 
 def test_the_diagnostic_reads_state_without_writing_any():
-    """Publishing must not perturb the state machine in any way."""
+    """Publishing must not change any state the state machine reads."""
     node = node_on_layer(1)
     watched = ('state', '_state_since', 'wp_index', 'altitude', 'pose',
                'layer_id', '_landed', '_land_failure', '_map_future',

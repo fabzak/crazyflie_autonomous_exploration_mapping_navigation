@@ -1,9 +1,8 @@
 """The shipped configuration must not restate the layer count anywhere.
 
-Companion to test_layer_catalog.py, which covers discovery itself.  These tests
-guard the *configuration* half of the same bug: cf_auto.yaml carrying a fixed
-``layer_ids: [1, 2, 3, 4]`` table and cf_auto.launch.py carrying a literal
-``for n in (2, 3, 4)``, both of which silently disagreed with the saved maps.
+Companion to test_layer_catalog.py, which covers discovery itself.  A fixed
+layer table in cf_auto.yaml or a literal layer range in cf_auto.launch.py can
+disagree with the saved maps without anything failing.
 """
 
 import re
@@ -20,9 +19,8 @@ CF_AUTO_REAL_YAML = PACKAGE / 'config' / 'cf_auto_real.yaml'
 MAP_DIR = PACKAGE.parents[1] / 'map'
 MAP_REAL_DIR = PACKAGE.parents[1] / 'map_real'
 
-# The three waypoints that were already configured before layer 4 was dropped,
-# transcribed from the file as it shipped.  They must survive byte-for-byte in
-# value; only the fourth was to be removed.
+# The three waypoints configured before layer 4 was dropped, transcribed from
+# the shipped file: their values must not change.
 ORIGINAL_FIRST_THREE = [-2.0, 2.0, 0.5,
                         0.0, -2.5, 1.0,
                         0.5, 2.0, 1.5]
@@ -43,7 +41,7 @@ def test_cf_auto_yaml_has_exactly_three_waypoints():
 
 
 def test_the_first_three_waypoints_are_unchanged():
-    """Removing waypoint 4 must not have disturbed 1, 2 or 3."""
+    """Dropping waypoint 4 must leave 1, 2 and 3 untouched."""
     flat = [float(v) for v in navigation_params()['waypoints_xyz']]
     assert flat == pytest.approx(ORIGINAL_FIRST_THREE)
 
@@ -82,7 +80,7 @@ def test_real_launch_uses_the_same_dynamic_loader():
     source = CF_AUTO_REAL_LAUNCH.read_text()
     assert 'layer_catalog' in source
     assert 'discover_layers' in source
-    # and no longer trusts a hand-kept table in the params file
+    # and does not read a hand-kept table from the params file
     assert '_layer_table' not in source
 
 
@@ -109,7 +107,7 @@ def test_real_profile_does_not_point_at_the_simulation_maps():
 
 
 def test_real_params_keep_their_own_placeholder():
-    """The real profile is untouched by this change beyond the shared loader."""
+    """The real profile shares only the loader; its waypoints stay its own."""
     with open(CF_AUTO_REAL_YAML) as handle:
         section = yaml.safe_load(handle)['cf_auto']['ros__parameters']
     assert list(section['waypoints_xyz']) == pytest.approx([0.0, 0.0, 0.20])

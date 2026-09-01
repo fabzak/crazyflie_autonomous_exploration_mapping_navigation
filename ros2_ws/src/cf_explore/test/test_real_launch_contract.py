@@ -73,11 +73,9 @@ def _correct_extrinsics(base):
 
 
 def test_autonomy_rejects_placeholder_sensor_translations():
-    """A rotation-only gate let all-zero mount offsets through unchallenged.
-
-    Rotations can be checked against the known physical mounting; a
+    """Rotations can be checked against the known physical mounting; a
     translation cannot, so the only available test is that the operator
-    supplied one at all.
+    supplied one at all - an all-zero translation is the untouched placeholder.
     """
     base = load_launch('real_base')
     zero = (0.0, 0.0, 0.0)
@@ -85,22 +83,22 @@ def test_autonomy_rejects_placeholder_sensor_translations():
                   for name in base.SENSOR_NAMES}
     with pytest.raises(RuntimeError, match='untouched placeholder'):
         base.validate_extrinsics_gate(extrinsics, True)
-    # Explicitly opting out keeps the rotation-only check available.
+    # Opting out keeps the rotation-only check available.
     base.validate_extrinsics_gate(extrinsics, True, require_translations=False)
 
 
 def test_extrinsics_are_validated_whenever_transforms_are_published():
     """A sensor-check session must not emit six identity rotations.
 
-    validate_extrinsics_gate used to return early unless autonomy was
-    enabled, while real_base published the static transforms regardless, so
-    RViz and rosbag evidence gathered with extrinsics_verified:=true and
-    autonomy_enabled:=false was wrong in a plausible-looking way.
+    real_base publishes the static transforms whether or not autonomy is
+    enabled, so the gate must validate whenever they are published - otherwise
+    RViz and rosbag evidence taken with autonomy_enabled:=false is plausibly
+    wrong.
     """
     base = load_launch('real_base')
     zero = (0.0, 0.0, 0.0)
     placeholder = {name: (zero, zero) for name in base.SENSOR_NAMES}
-    # The default is now "validate", so an unqualified call rejects.
+    # The default is to validate, so an unqualified call rejects.
     with pytest.raises(RuntimeError):
         base.validate_extrinsics_gate(placeholder)
 
@@ -121,11 +119,8 @@ def test_autonomy_accepts_the_physical_multiranger_mounting():
 
 @pytest.mark.parametrize('broken', ['right', 'back', 'left', 'up', 'down'])
 def test_each_sensor_rotation_is_validated_independently(broken):
-    """One correct sensor must never vouch for a placeholder neighbour.
-
-    The previous gate only rejected an entirely all-zero set, so supplying a
-    single non-zero value let five identity rotations through and silently
-    rotated the map.
+    """One correct sensor must not vouch for a placeholder neighbour: a single
+    non-zero value with five identity rotations rotates the map.
     """
     base = load_launch('real_base')
     extrinsics = _correct_extrinsics(base)
@@ -143,12 +138,10 @@ def test_missing_sensor_extrinsics_are_rejected():
 
 
 def test_sensor_tfs_attach_to_the_pitch_corrected_body_frame():
-    """Ranger rays must be projected through a physically correct attitude.
-
-    Crazyswarm2's odom callback leaves the firmware's legacy pitch inversion
-    in the <robot>/odom -> <robot> transform, so the ranger frames hang off
-    real_body_frame's corrected sibling instead.  Measured on hardware: nose
-    down 26 deg gave odom pitch -26 deg and projected the front ray upward.
+    """Crazyswarm2's odom callback leaves the firmware's legacy pitch inversion
+    in <robot>/odom -> <robot>, so the ranger frames hang off real_body_frame's
+    corrected sibling.  Measured: nose down 26 deg gave odom pitch -26 deg and
+    projected the front ray upward.
     """
     source = (LAUNCH_DIR / 'real_base.launch.py').read_text()
     assert "f'real_range_{sensor}_tf', body_frame," in source
@@ -158,10 +151,9 @@ def test_sensor_tfs_attach_to_the_pitch_corrected_body_frame():
 
 
 def test_corrected_body_frame_never_duplicates_the_official_robot_frame():
-    """A second publisher of <robot>/odom -> <robot> would be a real hazard.
-
-    real_body_frame must publish a NEW child of the same parent, never the
-    edge Crazyswarm2 already owns.
+    """A second publisher of <robot>/odom -> <robot> would be a real hazard:
+    real_body_frame publishes a new child of the same parent, never the edge
+    Crazyswarm2 already owns.
     """
     source = (LAUNCH_DIR / 'real_base.launch.py').read_text()
     assert "'child_frame': f'{robot}/base_corrected'" in source
@@ -172,7 +164,6 @@ def test_corrected_body_frame_never_duplicates_the_official_robot_frame():
 
 
 def test_body_frame_correction_is_disabled_for_simulation():
-    """The simulation launch must not gain a real-hardware TF fixup."""
     source = (LAUNCH_DIR / 'layer_explore.launch.py').read_text()
     assert 'base_corrected' not in source
     assert 'real_body_frame' not in source

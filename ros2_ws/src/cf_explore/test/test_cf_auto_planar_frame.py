@@ -67,7 +67,7 @@ def test_x_and_y_are_carried_through_untouched():
 
 
 def test_z_is_forced_to_zero_from_a_real_flight_altitude():
-    """The whole point: layer-2 altitude must not reach AMCL."""
+    """Layer-2 altitude must not reach AMCL."""
     assert transform_of(z=1.07).transform.translation.z == 0.0
     assert transform_of(z=2.0).transform.translation.z == 0.0
     assert transform_of(z=-0.4).transform.translation.z == 0.0
@@ -147,12 +147,9 @@ def test_each_message_gets_its_own_stamp():
 # --------------------------------------------------------------------------
 
 def test_planar_frame_shares_x_y_yaw_with_the_stabilized_frame():
-    """AMCL's motion model and laser pose use only x, y and yaw.
-
-    Both frames project the same odometry the same way, so switching AMCL's
-    base frame changes nothing it actually measures - only the z that used to
-    leak into map -> odom.
-    """
+    """AMCL's motion model and laser pose use only x, y and yaw, so switching
+    its base frame changes nothing it measures - it only removes the z that
+    leaked into map -> odom."""
     source = odometry(x=2.0, y=-1.0, z=1.07, roll=0.1, pitch=-0.2, yaw=0.75)
     planar = planar_transform(source, ODOM_FRAME, PLANAR_FRAME)
 
@@ -165,6 +162,6 @@ def test_planar_frame_shares_x_y_yaw_with_the_stabilized_frame():
     assert planar.transform.translation.y == \
         pytest.approx(source.pose.pose.position.y)
     assert yaw_of(planar) == pytest.approx(stabilized_yaw)
-    # ... and differs from it in exactly one component.
+    # ... and differs from it in one component.
     assert planar.transform.translation.z == 0.0
     assert source.pose.pose.position.z != 0.0

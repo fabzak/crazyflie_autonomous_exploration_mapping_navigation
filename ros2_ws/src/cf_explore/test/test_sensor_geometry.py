@@ -633,7 +633,7 @@ def test_layer_explorer_rejects_genuinely_stale_odom():
 
 
 def steep_ray(sensor, pitch, distance, *, body_z=2.041):
-    """One exact ray from a pitched airframe, as the projector would build it."""
+    """One exact ray from a pitched airframe, as the projector builds it."""
     rotation = quaternion_from_rpy(0.0, pitch, 0.0)
     local = (1.0, 0.0, 0.0) if sensor == 'front' else (-1.0, 0.0, 0.0)
     direction = rotate_vector(rotation, local)
@@ -667,12 +667,11 @@ def test_steep_downward_ray_to_floor_is_not_a_horizontal_obstacle(pitch_deg):
 
 
 def test_layer_four_soffit_regression_is_not_a_back_obstacle():
-    # Reproduced in simulation: layer 4, z 2.041 m, pitch +43 deg, aft return
-    # 0.036 m, nearest genuine horizontal obstacle 0.226 m.  The aft ranger was
-    # looking at a 2.10 m soffit, not at anything behind the drone.
+    # layer 4, z 2.041 m, pitch +43 deg: the 0.036 m aft return is a 2.10 m
+    # soffit, not an obstacle behind the drone (nearest real one 0.226 m).
     ray, body = steep_ray('back', math.radians(43.0), 0.036)
-    assert ray.obstacle_endpoint[2] > 2.041  # the return really is overhead
-    assert abs(ray.obstacle_endpoint[2] - 2.041) < 0.25  # inside the old band
+    assert ray.obstacle_endpoint[2] > 2.041  # the return is overhead
+    assert abs(ray.obstacle_endpoint[2] - 2.041) < 0.25  # inside the height band
     assert horizontal_safety_distance(
         [ray], body, 0.25, SelfFilterSettings()) == math.inf
 
@@ -713,14 +712,13 @@ def test_steep_ray_is_only_excluded_from_safety_not_from_projection():
 
 # ── 49-ray cone separation (the production Gazebo input path) ─────────────
 #
-# The node runs "Gazebo 49-ray input": 7 horizontal x 7 vertical exact rays
-# spanning the 27 deg cone, so each ray carries its own elevation.  That is
-# what makes a 20 deg gate able to separate the two cases measured in
-# simulation:
-#   cruise pitch 25.8 deg -> front cone spans 12.3..39.3 deg, so the shallow
-#                            rays stay eligible and a real wall is still seen;
-#   soffit  pitch 43.0 deg -> aft   cone spans 29.5..56.5 deg, so every ray is
-#                            steeper than the gate and none can be an obstacle.
+# Gazebo delivers 7 horizontal x 7 vertical exact rays over the 27 deg cone,
+# so each ray carries its own elevation.  A 20 deg gate then separates the two
+# measured cases:
+#   cruise pitch 25.8 deg -> front cone 12.3..39.3 deg: shallow rays stay
+#                            eligible, so a real wall is still seen;
+#   soffit  pitch 43.0 deg -> aft   cone 29.5..56.5 deg: every ray is above
+#                            the gate, so none can be an obstacle.
 
 GATE = math.radians(20.0)
 
@@ -770,17 +768,15 @@ def test_gate_sits_between_the_two_measured_cone_envelopes():
 
 # ── real single-ray up ranger (the Multi-ranger cone fallback) ────────────
 #
-# Measured on hardware 2026-08-22: the drone on the floor reported
-# range/up = 2.636 m to a ~2.80 m ceiling.  The cone branch used to require
-# every sampled direction to fall inside the climb cylinder, which is
-# geometrically impossible beyond radius / sin(fov/2) = 0.77 m at 0.18 m and
-# 27 deg.  Every real ceiling was therefore rejected, upward_headroom stayed
-# infinite, and TAKEOFF aborted after the vertical-motion timeout with
-# "fresh TF-valid up geometry unavailable".
+# A real up ranger returns one bin, not a cone.  Requiring every sampled
+# direction to lie inside the climb cylinder is impossible beyond
+# radius / sin(fov/2) = 0.77 m (0.18 m radius, 27 deg FOV), so every real
+# ceiling was rejected, upward_headroom stayed infinite and TAKEOFF timed out.
+# Measured on hardware: 2.636 m to a ~2.80 m ceiling.
 
 
 def real_up_record(distance_m: float):
-    """One-bin LaserScan-style up record, exactly as record_from_ros builds it."""
+    """One-bin LaserScan-style up record, as record_from_ros builds it."""
     return scan_record(
         sensor='up', ranges=(distance_m,), exact=False,
         horizontal_count=1, vertical_count=SETTINGS.fov_samples,
@@ -809,7 +805,7 @@ def test_single_ray_ceiling_beyond_the_climb_radius_is_still_seen(distance):
 
 
 def test_single_ray_headroom_is_a_conservative_lower_bound():
-    """It may understate the real clearance, never overstate it."""
+    """It may understate the real clearance, but never overstate it."""
     body, sensor = level_body_and_up_sensor(0.025)
     distance = 2.636
     headroom = upward_headroom(

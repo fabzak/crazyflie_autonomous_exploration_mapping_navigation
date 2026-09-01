@@ -52,15 +52,14 @@ NEIGHBOURS: Tuple[Tuple[int, int, float], ...] = (
 )
 
 
+# XY gain while tracking a moving diagonal-hop target.  ascend_hold_gain (0.6)
+# is a station-keeping figure and lags a moving reference, which degrades the
+# diagonal into climb-then-translate.
+DIAGONAL_TRACK_GAIN = 4.0
+
 # -- landing decision table ---------------------------------------------------
 # Actions LAND can command on one tick.  HOLD_STALE commands zero, so
 # control_services holds the height; the three terminal actions latch.
-# Proportional gain used while TRACKING a moving diagonal-transition target.
-# The station-keeping gain (ascend_hold_gain, 0.6) is for holding one point; a
-# moving reference needs a tighter loop or the aircraft lags the whole segment
-# and the motion degrades into "climb, then translate".
-DIAGONAL_TRACK_GAIN = 4.0
-
 LAND_DESCEND = 'DESCEND'
 LAND_CONFIRM = 'CONFIRM'
 LAND_HOLD_STALE = 'HOLD_STALE'
@@ -214,8 +213,8 @@ class GridMap:
 
         Always returns a fresh array, even for ``cells == 0``: ``blocked`` is
         the layer ``mark_blocked_disc`` mutates in place, and aliasing it onto
-        ``raw_blocked`` would let a live-sensed obstacle rewrite the pristine
-        saved-map mask that waypoint validation reads.
+        ``raw_blocked`` would let a live-sensed obstacle rewrite the saved-map
+        mask that waypoint validation reads.
         """
         out = blocked.copy()
         for _ in range(max(0, cells)):
@@ -427,11 +426,10 @@ class CfAuto(Node):
             declare('layer_altitude_tolerance_m', 0.15).value)
         if len(self.layer_ids) != len(self.layer_heights):
             raise RuntimeError('layer_ids and layer_heights length mismatch')
-        # The layer table is discovered from the saved maps by the launch
-        # preflight (cf_explore.layer_catalog), so a table that does not line up
-        # with the map list means the two were built from different sources -
-        # exactly the drift that let cf_auto try to switch to a layer whose map
-        # was never saved.  Refuse on the ground rather than mid-mission.
+        # The layer table and the map list both come from the launch preflight
+        # (cf_explore.layer_catalog).  Different lengths mean they were built
+        # from different sources, so refuse on the ground rather than let a
+        # switch to a layer with no saved map fail mid-mission.
         if len(self.layer_map_urls) != len(self.layer_ids):
             raise RuntimeError(
                 f'layer_map_urls has {len(self.layer_map_urls)} entries but '
@@ -459,19 +457,18 @@ class CfAuto(Node):
             self.transitions[(self.layer_ids.index(a),
                               self.layer_ids.index(b))] = (flat_xy[2 * k],
                                                            flat_xy[2 * k + 1])
-        # A configured hop is a place proven free on BOTH of the maps it joins,
-        # and that property is symmetric - so the same point also serves the
-        # descent.  Registering the reverse key costs nothing and needs no new
-        # configuration surface.
+        # A configured hop is free on both maps it joins, and that is
+        # symmetric, so the same point serves the descent; register the
+        # reverse key too.
         for (a_index, b_index), point in list(self.transitions.items()):
             self.transitions.setdefault((b_index, a_index), point)
         self._active_transition: Optional[Point] = None
-        # Far end of a diagonal hop, on the target layer.  None means "fly this
-        # hop the old way", which is what every fallback path restores.
+        # Far end of a diagonal hop, on the target layer.  None means an
+        # in-place vertical hop, which every fallback path restores.
         self._transition_end: Optional[Point] = None
-        # Which layer the pending vertical hop is heading for.  PRE_ASCEND /
-        # PRE_DESCEND set it, and SWITCH_MAP reads it instead of assuming the
-        # next layer is always the one above.
+        # Which layer the pending hop is heading for.  _plan_target arms it;
+        # the ascend/descend/switch states read it rather than assume the next
+        # layer is the one above.
         self._pending_layer_index: Optional[int] = None
         # Which layer a hop departed from, for logging after layer_index moves.
         self._transition_origin_index: Optional[int] = None
@@ -483,12 +480,10 @@ class CfAuto(Node):
             declare('ascend_min_up_clearance_m', 0.35).value)
 
         # --- downward transitions ---------------------------------------
-        # The mirror image of the ascent gate, on the down ranger.  That
-        # sensor reports height above whatever solid surface is nearest below
-        # - floor, pillar cap, furniture - not the altitude of the layer
-        # underneath, so it is used exactly the way the up ranger is: as a
-        # safety gate, never as the arrival test.  Arrival stays on odometry
-        # altitude, as it is for the climb.
+        # Mirror of the ascent gate, on the down ranger.  That sensor reports
+        # height above whatever is nearest below (floor, pillar cap,
+        # furniture), not the layer altitude, so it gates safety only -
+        # arrival is odometry z, as in the climb.
         self.descend_speed = float(declare('descend_speed', 0.25).value)
         self.descend_timeout = float(declare('descend_timeout_sec', 25.0).value)
         self.descend_min_down = float(
@@ -500,18 +495,15 @@ class CfAuto(Node):
         self.ascend_hold_max_speed = float(
             declare('ascend_hold_max_speed', 0.20).value)
         # --- diagonal layer transitions ---------------------------------
-        # A hop normally stops at one XY and changes altitude in place.  With
-        # this enabled the hop instead slides along the route it was already
-        # going to fly on the target layer, so XY and Z move together.  The
-        # planner, the layer choice and the hop XY are untouched; only the way
-        # the hop is FLOWN changes.  Set False to restore the in-place climb.
+        # A hop normally changes altitude in place.  Enabled, it slides along
+        # the target-layer route it was going to fly anyway, so XY and Z move
+        # together.  Planning is untouched; only the execution changes.
+        # False = in-place climb.
         self.diagonal_transitions = bool(
             declare('diagonal_layer_transitions_enabled', True).value)
-        # XY speed allowed while a diagonal hop is in progress.  The in-place
-        # hold uses ascend_hold_max_speed (0.20 m/s), which is a station-keeping
-        # figure and far too slow to cover a useful span during a 2 s climb.
-        # Kept below the 0.55 m/s cruise cap so a transition is never the
-        # fastest thing the aircraft does.
+        # XY speed during a diagonal hop: ascend_hold_max_speed (0.20 m/s) is
+        # station-keeping and too slow to cover ground in a ~2 s climb.  Kept
+        # under the 0.55 m/s cruise cap.
         self.transition_xy_speed = float(
             declare('transition_xy_speed_mps', 0.50).value)
         self.map_switch_timeout = float(
@@ -558,41 +550,34 @@ class CfAuto(Node):
         self.snap_radius_cells = int(declare('snap_radius_cells', 20).value)
 
         # --- static multi-layer routing ----------------------------------
-        # Planning may consider every saved layer, not just the one map_server
-        # happens to be serving.  Set False to fall back to the single-layer,
-        # upward-only behaviour this node shipped with.
+        # Planning may use every saved layer, not only the one map_server is
+        # serving.  False = single-layer, upward-only planning.
         self.multilayer_routing = bool(
             declare('multilayer_routing_enabled', True).value)
-        # Private, planning-only copies of every saved layer map, built from
-        # the same files map_server is given.  These are NEVER handed to
-        # _mark_sensed_obstacles: a live obstacle must not become evidence
-        # about some other saved layer.  See layer_route's module docstring.
+        # Planning-only copies of the saved layer maps, built from the same
+        # files map_server is given.  Never passed to _mark_sensed_obstacles:
+        # a live obstacle must not become evidence about another saved layer.
         self._layer_grids: Dict[int, GridMap] = {}
 
         # --- live unmapped-obstacle vertical bypass -----------------------
-        # A bounded, purely local recovery for an obstacle that is physically
-        # present but absent from every saved map.  It is the LAST resort, not
-        # the first: the existing same-layer response (safety stop -> ESCAPE ->
-        # mark the obstacle -> replan) runs max_replans_per_waypoint times
-        # first, and only when that has genuinely failed is a probe armed.
-        # Nothing here ever writes to the static _layer_grids cache - an
-        # unmapped obstacle must not become evidence about a saved layer.
+        # Local recovery for an obstacle that is physically there but on no
+        # saved map.  Last resort: safety stop -> ESCAPE -> mark -> replan
+        # runs max_replans_per_waypoint times first.  Never writes to
+        # _layer_grids.
         self.vertical_bypass_enabled = bool(
             declare('vertical_bypass_enabled', True).value)
-        # Probe altitudes are discrete, never a continuous sweep.
         self.vertical_probe_step = float(
             declare('vertical_probe_step_m', 0.10).value)
-        # Bounds the whole excursion to +-0.30 m by default, which stays well
-        # inside the 0.5 m layer spacing so a probe can never wander into the
-        # altitude band of a neighbouring saved layer.
+        # +-0.30 m by default: inside the 0.5 m layer spacing, so a probe
+        # cannot reach a neighbouring layer's altitude band.
         self.vertical_probe_max_steps = int(
             declare('vertical_probe_max_steps', 3).value)
         self.vertical_probe_min_z = float(
             declare('vertical_probe_min_altitude_m', 0.30).value)
         self.vertical_probe_max_z = float(
             declare('vertical_probe_max_altitude_m', 2.30).value)
-        # Dwell before believing a candidate altitude: repeated fresh returns
-        # over a minimum interval, never a single sample.
+        # Dwell before believing a candidate altitude: repeated fresh returns,
+        # never one sample.
         self.probe_dwell_sec = float(
             declare('vertical_probe_dwell_sec', 1.0).value)
         self.probe_required_samples = int(
@@ -698,9 +683,8 @@ class CfAuto(Node):
         self.marker_pub = self.create_publisher(
             MarkerArray, '/cf_auto/waypoints', latched)
         self.status_pub = self.create_publisher(String, '/cf_auto/status', 10)
-        # Diagnostic only: tells RViz which saved layer is live.  Latched, so a
-        # visualizer started later learns the layer immediately.  Nothing in
-        # cf_auto ever subscribes to it - it is an output, never an input.
+        # Diagnostic output: which saved layer is live.  Latched so a
+        # visualizer started later sees it; cf_auto never subscribes.
         self.active_layer_pub = self.create_publisher(
             Int32, '/cf_auto/active_layer', latched)
 
@@ -759,10 +743,9 @@ class CfAuto(Node):
         self._min_obstacle_seen = math.inf
         self._safety_stops = 0
 
-        # Full odometry planar pose, not just altitude.  The live bypass flies
-        # off-layer where the active saved map does not describe the world, so
-        # AMCL cannot be trusted for the duration; dead reckoning from these
-        # fields is what later composes the corrective reseed.
+        # Planar odom pose, not just altitude: a bypass flies off-layer where
+        # AMCL cannot be trusted, and the reseed is composed from dead
+        # reckoning between these samples.  See _on_odom.
         self._odom_pose: Optional[Tuple[float, float, float]] = None
 
         # -- live unmapped-obstacle bypass state -------------------------------
@@ -813,7 +796,7 @@ class CfAuto(Node):
         self._map_seq = 0
         self._map_seq_at_switch = 0
         self._reseeded = False
-        self._published_layer_id = None     # diagnostic latch, see _tick
+        self._published_layer_id = None     # latch, see _publish_active_layer
 
         self.create_timer(self.control_period, self._tick)
         self.create_timer(1.0, self._publish_waypoint_markers)
@@ -829,8 +812,8 @@ class CfAuto(Node):
     def _build_layer_cache(self):
         """Read every saved layer map once, for multi-layer planning only.
 
-        A failure here is not fatal: the node simply falls back to planning on
-        the active layer, which is exactly the behaviour it had before.
+        A failure here is not fatal: the node falls back to planning on the
+        active layer.
         """
         if not self.multilayer_routing:
             self.get_logger().info(
@@ -886,8 +869,8 @@ class CfAuto(Node):
     def _on_initialpose(self, msg: PoseWithCovarianceStamped):
         """Observe the RViz2 estimate; AMCL subscribes to /initialpose itself.
 
-        AMCL's base frame is the real robot base, so the RViz pose already
-        arrives in the frame AMCL expects and needs no conversion.
+        AMCL localizes cf_auto/amcl_base, which shares x, y and yaw with the
+        robot base, so the RViz pose needs no conversion.
         """
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
@@ -904,11 +887,10 @@ class CfAuto(Node):
 
     def _on_odom(self, msg: Odometry):
         self.altitude = float(msg.pose.pose.position.z)
-        # The planar pose is needed as well as the altitude: an off-layer
-        # bypass is flown on dead reckoning, and the reseed that ends it is
-        # the preserved map pose composed with the odometry delta measured
-        # here.  Odometry is already expressed in odom_frame, so no TF lookup
-        # is involved and this stays valid even while AMCL is unreliable.
+        # Planar pose as well as altitude: the bypass reseed is the preserved
+        # map pose composed with the odometry delta measured here.  Odometry is
+        # already in odom_frame, so no TF lookup is involved and this stays
+        # valid while AMCL is unreliable.
         q = msg.pose.pose.orientation
         self._odom_pose = (float(msg.pose.pose.position.x),
                            float(msg.pose.pose.position.y),
@@ -1139,12 +1121,11 @@ class CfAuto(Node):
         return self.transitions.get((from_index, to_index))
 
     def _diagonal_span_m(self, from_index: int, to_index: int) -> float:
-        """How far XY can honestly travel while the altitude change is flown.
+        """How far XY can travel while the altitude change is flown, in metres.
 
-        Derived from the configured speeds, never guessed: the altitude change
-        sets the duration, and the transition XY speed sets the reach.  The 0.9
-        factor leaves the tracker headroom so the segment finishes rather than
-        being cut off the instant the target altitude arrives.
+        The altitude change sets the duration and transition_xy_speed sets the
+        reach, so the span comes from the configured speeds rather than the
+        map.
         """
         target = self.layer_heights[to_index]
         here = self.altitude if self.altitude is not None else \
@@ -1159,15 +1140,14 @@ class CfAuto(Node):
     def _arm_diagonal(self, route, hop) -> None:
         """Pick the far end of a diagonal hop, or leave it vertical.
 
-        ``B`` is taken from the MOVE leg the route already planned on the target
-        layer, so the diagonal only ever shortcuts distance the aircraft was
-        going to fly anyway.  Any failure - feature off, no target-layer path,
-        no safe corridor - leaves ``_transition_end`` None, which is exactly the
-        validated in-place climb.
+        The endpoint comes from the MOVE leg already planned on the target
+        layer, so a diagonal only shortcuts distance the aircraft was going to
+        fly.  Any failure - feature off, no target-layer path, no safe corridor
+        - leaves ``_transition_end`` None, the validated in-place climb.
         """
         self._transition_end = None
-        # getattr: a partially built node (and any caller predating this feature)
-        # must fall back to the validated in-place hop rather than crash.
+        # getattr: a partially built node falls back to the in-place hop, not
+        # a crash.
         if not getattr(self, 'diagonal_transitions', False) or not self.multilayer_routing:
             return
         legs = list(route.legs)
@@ -1203,11 +1183,11 @@ class CfAuto(Node):
             f'corridor free on both inflated maps.')
 
     def _transition_hold_target(self, start_z: float, target_z: float) -> Point:
-        """XY the hop should be at right now.
+        """XY the hop should be at right now, in the map frame.
 
-        Vertical hop: the fixed transition point, unchanged.  Diagonal hop: the
-        point on A->B matching how much of the altitude change is already done,
-        so XY and Z advance together instead of one after the other.
+        Vertical hop: the fixed transition point.  Diagonal hop: the point on
+        anchor->end matching how much of the altitude change is already done,
+        so XY and Z advance together.
         """
         anchor = self._active_transition or (
             (self.pose[0], self.pose[1]) if self.pose else (0.0, 0.0))
@@ -1224,13 +1204,11 @@ class CfAuto(Node):
 
     def _transition_track_velocity(self, start_z: float,
                                    target_z: float) -> Tuple[float, float, float]:
-        """Map-frame XY velocity that chases the hop's current hold target.
+        """Map-frame XY velocity chasing the hop's current hold target.
 
-        Identical to the station-keeping this state has always done when the
-        hop is vertical.  When it is diagonal the target is moving, so the gain
-        and the cap are raised enough to follow it - a station-keeping gain
-        would simply lag the whole way and turn the diagonal back into a climb
-        followed by a translation.
+        A vertical hop is station-keeping.  A diagonal target moves, so gain
+        and cap are raised; a station-keeping gain lags and degrades the
+        diagonal into climb-then-translate.
         """
         hold = self._transition_hold_target(start_z, target_z)
         dx = hold[0] - self.pose[0]
@@ -1248,12 +1226,11 @@ class CfAuto(Node):
 
     def _static_route(self, goal_xy: Point,
                       goal_layer: int) -> Optional[layer_route.LayerRoute]:
-        """Shortest 3D route to ``goal_xy`` over the SAVED maps, or None.
+        """Shortest 3D route to ``goal_xy`` over the saved maps, or None.
 
-        Deliberately reasons from the private static cache, never from
-        ``self.grid``: that working grid carries live-sensed obstacles burned in
-        by ``_mark_sensed_obstacles``, and an unmapped obstacle must never be
-        taken as evidence that a different saved layer is clear.
+        Reads the private static cache, not ``self.grid``: that working grid
+        has live-sensed obstacles burned in by ``_mark_sensed_obstacles``, and
+        an unmapped obstacle is no evidence about another saved layer.
         """
         if not self.multilayer_routing or self.pose is None:
             return None
@@ -1308,11 +1285,11 @@ class CfAuto(Node):
 
         if goal_layer == self.layer_index:
             # No usable static route, but the waypoint is on this layer: let
-            # the live-grid A* below decide, exactly as before this feature.
+            # the live-grid A* below decide.
             return (wp[0], wp[1])
 
-        # Fallback for a disabled/unavailable cache: one adjacent hop at a
-        # time over the configured transition points, as originally shipped.
+        # Fallback when the cache is off or incomplete: one adjacent hop at a
+        # time over the configured transition points.
         next_index = self.layer_index + (1 if goal_layer > self.layer_index
                                          else -1)
         point = self._transition_point(self.layer_index, next_index)
@@ -1356,21 +1333,14 @@ class CfAuto(Node):
                     f'waypoint {index} ({x:.2f}, {y:.2f}) -> cell {cell} is '
                     f'not known free (occupied or unknown)')
 
-        # The configured transition table is the FALLBACK mechanism, and
-        # _plan_target consults it only where _static_route returned None.
-        # _static_route can only do that for a routing reason when multi-layer
-        # routing is off or some layer has no cached grid (its pose guard
-        # cannot fire - _st_plan returns before planning without a pose).  So
-        # with the static planner active over a complete cache, every hop XY
-        # comes from plan_3d_route over the saved grids and the configured
-        # points are unreachable configuration; requiring them to be free
-        # would abort a valid mission over a typed placeholder.
-        #
-        # This never loosens a check that can matter.  A RouteError clears
-        # multilayer_routing, and _validate_waypoints runs again on every
-        # /map and after every map switch, so the strict checks below come
-        # back the moment the fallback becomes reachable - and _plan_target
-        # still aborts outright when the hop it then needs is not configured.
+        # The configured transition table is only the fallback: _plan_target
+        # uses it where _static_route returns None, i.e. multi-layer routing
+        # off or a layer with no cached grid.  With the static planner over a
+        # complete cache every hop XY comes from the saved grids, so checking
+        # the unused configured points would abort a valid mission over a typed
+        # placeholder.  Nothing is lost: a RouteError clears multilayer_routing
+        # and this runs again on every /map, and _plan_target still aborts on a
+        # hop it needs but has no configuration for.
         static_owns_transitions = (
             self.multilayer_routing
             and len(self._layer_grids) == len(self.layer_ids))
@@ -1500,14 +1470,12 @@ class CfAuto(Node):
         self.tf_broadcaster.sendTransform(out)
 
     def _publish_active_layer(self):
-        """Diagnostic latch: republish the active layer id whenever it changes.
+        """Diagnostic latch: republish the active layer id when it changes.
 
-        Observing ``self.layer_id`` from the tick instead of hooking the two
-        places that assign it keeps the assignment sites - and therefore the
-        transition logic - completely untouched, and cannot miss a future one.
-        ``_st_switch_map`` only advances the index once LoadMap has succeeded
-        *and* the new ``/map`` has arrived, so this value never claims a layer
-        the map_server is not already serving.
+        Polled from the tick rather than hooked into the assignment sites.
+        ``_st_switch_map`` advances the index only after LoadMap succeeded and
+        the new ``/map`` arrived, so this never names a layer map_server is not
+        serving.
         """
         if self.layer_id != self._published_layer_id:
             self._published_layer_id = self.layer_id
@@ -1597,14 +1565,11 @@ class CfAuto(Node):
         cells = self.grid.astar(snapped_start, snapped_goal,
                                 self.heuristic_weight)
         if not cells:
-            # Marking a live obstacle can seal the only corridor on this layer,
-            # and then A* fails here rather than in FOLLOW.  Measured in
-            # Gazebo: a single unmapped wall produced exactly this, because the
-            # marked disc plus the inflation margin closes a corridor in one
-            # pass.  That is the same "same-layer recovery has failed" state
-            # the FOLLOW branch detects, so it earns the same bounded probe.
-            # self.replans > 0 keeps a statically unreachable goal failing
-            # immediately, exactly as before: no live obstacle was ever marked.
+            # A marked obstacle plus the inflation margin can seal the only
+            # corridor on this layer in one pass, so A* fails here rather than
+            # in FOLLOW - the same "same-layer recovery failed" state, and it
+            # earns the same bounded probe.  replans > 0 keeps a statically
+            # unreachable goal failing immediately: nothing was marked.
             if self.replans > 0 and self._arm_vertical_bypass():
                 return
             self._fail_waypoint('A* found no collision-free path')
@@ -1658,9 +1623,8 @@ class CfAuto(Node):
                                 'at transition point')
                 return
             if self._off_original_layer():
-                # A waypoint belongs to a layer.  Being over it at some
-                # intermediate bypass altitude is not reaching it, so hold and
-                # let the bypass finish returning to the layer altitude.
+                # A waypoint belongs to a layer: being over it at an
+                # intermediate bypass altitude is not reaching it.
                 self.get_logger().warn(
                     f'Over waypoint {self.wp_index + 1} at {self.altitude:.2f} m '
                     f'but its layer is at {self._bypass_origin_z:.2f} m; not '
@@ -1681,20 +1645,18 @@ class CfAuto(Node):
         if self._safety_block_elapsed() > self.safety_block_replan_sec:
             self._cmd()
             if self.replans >= self.max_replans:
-                # Same-layer recovery has now genuinely failed: the obstacle
-                # was marked and routed around max_replans times and still
-                # blocks translation.  Only now is a vertical bypass justified;
-                # a single /scan_safety return never triggers one.
+                # Same-layer recovery has failed: marked and replanned
+                # max_replans times and still blocked.  Only now is a vertical
+                # bypass justified.
                 if self._arm_vertical_bypass():
                     return
                 self._fail_waypoint('live obstacle blocks every replanned route')
                 return
             self.replans += 1
-            # Remember how far ahead the obstacle was while it was actually
-            # blocking us.  ESCAPE then backs the drone off, so by the time a
-            # bypass is armed the obstacle may already be outside the 0.30 m
-            # influence radius and unmeasurable - but the crossing length has
-            # to be justified by a real measurement, not a guess.
+            # Record the stand-off while the obstacle is still blocking:
+            # ESCAPE backs off, and by arming time it may be outside the
+            # 0.30 m influence radius, but the crossing length has to come
+            # from a measurement.
             if math.isfinite(self._nearest_obstacle):
                 self._last_block_range = self._nearest_obstacle
             marked = self._mark_sensed_obstacles()
@@ -1743,7 +1705,7 @@ class CfAuto(Node):
             target_index += 1
 
         # Pure pursuit steers straight at the lookahead point, so pull back to
-        # the furthest sample actually reachable in a straight line.
+        # the furthest sample reachable in a straight line.
         if self.follow_segment_check and self.grid is not None:
             here = self.grid.to_cell(x, y)
             skip = self.inflation_cells + 1
@@ -1823,8 +1785,8 @@ class CfAuto(Node):
     def _ascend_target_index(self) -> int:
         """The layer this climb is heading for.
 
-        Always the layer armed by ``_plan_target``; the ``+ 1`` fallback keeps
-        the original behaviour if a climb is somehow entered unarmed.
+        The layer armed by ``_plan_target``; the ``+ 1`` fallback only covers a
+        climb entered unarmed.
         """
         if self._pending_layer_index is not None:
             return self._pending_layer_index
@@ -1918,9 +1880,8 @@ class CfAuto(Node):
             self._set_state('SWITCH_MAP', 'at layer altitude')
             return
 
-        # XY tracking of the hop target, still via the guard.  Vertical hop:
-        # station-keeping over one point.  Diagonal hop: the point slides along
-        # A->B in step with the altitude, so XY and Z move together.
+        # XY tracking of the hop target, still through the safety guard; see
+        # _transition_track_velocity for the vertical/diagonal difference.
         vx = vy = 0.0
         if self._update_pose() and self.pose is not None:
             vx, vy, distance = self._transition_track_velocity(
@@ -1934,10 +1895,9 @@ class CfAuto(Node):
     def _st_pre_descend(self):
         """Hold XY still and prove downward clearance before any descent.
 
-        The mirror of ``_st_pre_ascend``.  The down ranger measures height above
-        the nearest solid surface below - the floor, or an obstacle between the
-        layers - so requiring the full descent plus a margin proves that the
-        drone will still have that margin once it arrives.
+        Mirror of ``_st_pre_ascend``.  The down ranger sees the nearest surface
+        below - floor, or an obstacle between the layers - so requiring the
+        full drop plus a margin proves the margin still holds on arrival.
         """
         self._cmd()
         if time.time() - self._state_since < 1.5:
@@ -1997,7 +1957,7 @@ class CfAuto(Node):
 
         # Arrival is decided on odometry altitude, never on the ranger: the
         # ranger measures the floor, which has no fixed relation to the target
-        # layer's altitude.  This mirrors how the climb decides arrival.
+        # layer's altitude.
         if self.altitude <= target_z + self.ascend_tolerance:
             self._cmd()
             if getattr(self, '_transition_end', None) is not None and self.pose is not None:
@@ -2122,12 +2082,11 @@ class CfAuto(Node):
                 f'layer-{self.layer_id} localization did not become valid '
                 f'(pose={pose_ok} scan={scan_ok} altitude={altitude_ok})')
 
-    # -- live unmapped-obstacle bypass (Gate 4/5) ------------------------------
+    # -- live unmapped-obstacle bypass -----------------------------------------
     #
-    # Reached only after the ordinary same-layer response has genuinely failed:
-    # safety stop -> ESCAPE -> mark the obstacle -> replan, repeated
-    # max_replans_per_waypoint times.  An obstacle that is in the saved maps is
-    # handled by the static 3D planner long before anything here runs.
+    # Reached only after the same-layer response has failed: safety stop ->
+    # ESCAPE -> mark -> replan, max_replans_per_waypoint times.  Obstacles that
+    # are in the saved maps are handled by the static 3D planner.
     #
     #   VERTICAL_PROBE ---------> MOVE_TO_BYPASS_ALTITUDE
     #        ^   |                        |
@@ -2138,19 +2097,17 @@ class CfAuto(Node):
     #        |          v
     #        +--- RETURN_TO_ORIGINAL_ALTITUDE -> RELOCALIZE -> PLAN
     #
-    # The manoeuvre is deliberately local.  No global A* ever runs at an
-    # intermediate altitude, because no saved map describes one.
+    # Local by construction: no global A* runs at an intermediate altitude,
+    # because no saved map describes one.
 
     def _bypass_body_bearing(self) -> Optional[float]:
         """Travel direction as a body-frame bearing, from odometry alone.
 
-        The bypass flies where no saved map applies, so AMCL's yaw may drift
-        while it matches the active layer's map against geometry that is not
-        there.  Freezing the map->odom yaw offset at arming time and steering
-        off odometry keeps the flown direction correct no matter what AMCL
-        does in the meantime; the safety guard still runs in the TF map frame,
-        where the commanded velocity and the obstacle vectors share whatever
-        rotation TF currently reports, so any error cancels.
+        AMCL's yaw can drift off-layer, where it matches the map against
+        geometry that is not there, so the map->odom offset is frozen at arming
+        time and the heading comes from odometry.  The guard still runs in the
+        TF map frame, where velocity and obstacle vectors share the same
+        rotation, so any error cancels.
         """
         if self._odom_pose is None:
             return None
@@ -2201,10 +2158,9 @@ class CfAuto(Node):
         # map->odom yaw offset, frozen for the whole manoeuvre.
         theta = bypass_geometry.wrap_angle(self.pose[2] - self._odom_pose[2])
 
-        # How far ahead the blocking obstacle actually is.  Prefer the measured
-        # stand-off along the travel direction; fall back to the nearest return
-        # anywhere.  Without a finite figure the crossing length cannot be
-        # justified, so refuse rather than invent one.
+        # Stand-off to the blocking obstacle: measured along travel if
+        # possible, else the nearest return.  No finite figure means no
+        # crossing length, so refuse.
         obstacle_range = self._forward_clearance(
             bypass_geometry.wrap_angle(bearing_map - self.pose[2]))
         if obstacle_range is None or not math.isfinite(obstacle_range):
@@ -2243,8 +2199,7 @@ class CfAuto(Node):
         self._crossing = None
         self._front_clear_logged = False
         self._reset_probe_evidence()
-        # Diagnostics for the AMCL-recovery acceptance check: the two poses
-        # the reseed will later be composed from, recorded before any motion.
+        # Log both poses the reseed is later composed from, before any motion.
         self.get_logger().info(
             f'BYPASS PRE-STATE: map pose '
             f'({self.pose[0]:.3f}, {self.pose[1]:.3f}, '
@@ -2262,15 +2217,12 @@ class CfAuto(Node):
         return True
 
     def _reanchor_bypass_hold(self):
-        """Re-base the XY hold on where the drone actually is now.
+        """Re-base the XY hold on where the drone is now.
 
-        ``_bypass_max_excursion`` bounds *unintended* drift while the drone is
-        supposed to be holding station.  The crossing displaces it on purpose,
-        so once the crossing is over the pre-crossing anchor is simply the
-        wrong reference: measuring against it charges the whole deliberate
-        manoeuvre to the drift budget and vetoes the descent that brings the
-        drone home.  The bound itself is unchanged - only what it is measured
-        from.
+        ``_bypass_max_excursion`` bounds unintended drift, but the crossing
+        displaces the drone on purpose - measuring the return against the
+        pre-crossing anchor would charge that to the drift budget and veto the
+        descent home.  The bound is unchanged, only its reference.
         """
         if self.pose is not None:
             self._bypass_anchor_xy = (self.pose[0], self.pose[1])
@@ -2288,11 +2240,7 @@ class CfAuto(Node):
         self._probe_evidence = None
 
     def _off_original_layer(self) -> bool:
-        """True while a bypass has the drone away from its layer altitude.
-
-        The waypoint objective belongs to a layer, so arriving over it at some
-        intermediate probe altitude is not arriving at it.
-        """
+        """True while a bypass has the drone away from its layer altitude."""
         return (self._bypass_active
                 and abs(self.altitude - self._bypass_origin_z)
                 > self.ascend_tolerance)
@@ -2301,7 +2249,7 @@ class CfAuto(Node):
         """Hold the anchor position, optionally turning onto the travel line.
 
         Returns True once the nose is close enough to the travel direction for
-        the front cone to actually see where the drone would fly.
+        the front cone to see where the drone would fly.
         """
         bearing_body = self._bypass_body_bearing()
         wz = 0.0
@@ -2337,10 +2285,9 @@ class CfAuto(Node):
     def _st_vertical_probe(self):
         """Hold still at a candidate altitude and decide whether it is clear.
 
-        Nothing here moves vertically.  The drone cannot measure an altitude it
-        has not flown to, so a candidate is judged only once the drone is
-        already at it - which is why the state is re-entered after every
-        MOVE_TO_BYPASS_ALTITUDE.
+        An altitude can only be measured once flown to, so this state is
+        re-entered after every MOVE_TO_BYPASS_ALTITUDE.  Nothing here moves
+        vertically.
         """
         if time.time() - self._bypass_started_at > self.bypass_total_timeout_sec:
             self._bypass_failed('vertical bypass exceeded its total time budget')
@@ -2584,9 +2531,8 @@ class CfAuto(Node):
         if bearing_body is None:
             self._cmd()
             return
-        # Steer along the frozen odometry bearing, but express it in the TF map
-        # frame so the existing guard - the single choke point every
-        # translation goes through - still owns the veto.
+        # Steer on the frozen odometry bearing, expressed in the map frame so
+        # the guard still owns the veto.
         cmd_bearing = bypass_geometry.wrap_angle(bearing_body + self.pose[2])
         self._cmd_map_velocity(self.bypass_speed * math.cos(cmd_bearing),
                                self.bypass_speed * math.sin(cmd_bearing))
@@ -2594,8 +2540,8 @@ class CfAuto(Node):
     def _st_return_to_original_altitude(self):
         outcome = self._bypass_vertical_tick('origin')
         if outcome is None:
-            # 5.3: never resume the mission from a temporary altitude.  If the
-            # return cannot be demonstrated safe, land under control instead.
+            # Never resume the mission from a temporary altitude: if the
+            # return cannot be shown safe, land under control instead.
             self.get_logger().error(
                 'RETURN TO LAYER ALTITUDE FAILED - landing rather than '
                 'continuing the mission off-layer.')
@@ -2626,13 +2572,10 @@ class CfAuto(Node):
     def _reseed_after_bypass(self) -> bool:
         """Set the pose RELOCALIZE will reseed AMCL with.
 
-        Republishing the pre-manoeuvre pose unchanged would assert the drone
-        never moved, injecting a false jump exactly as large as the bypass.
-        The preserved map pose is therefore composed with the odometry
-        displacement actually flown, rotated into map axes by the map->odom
-        yaw offset that held when the bypass started.  No saved-map layer
-        switch happens: the manoeuvre stayed between mapped layers, so
-        layer_index, layer_z and the active /map are all untouched.
+        Republishing the pre-manoeuvre pose would claim the drone never moved,
+        so the preserved map pose is composed with the odometry displacement
+        flown, rotated by the map->odom yaw offset frozen at arming.  No layer
+        switch: the bypass stays between mapped layers.
         """
         if (self._bypass_map_pose is None or self._bypass_odom_pose is None
                 or self._odom_pose is None):
@@ -2656,12 +2599,10 @@ class CfAuto(Node):
         self._cmd()
         self.get_logger().error(f'VERTICAL BYPASS FAILED: {reason}')
         if abs(self.altitude - self._bypass_origin_z) > self.ascend_tolerance:
-            # Off-layer: get back to the mapped altitude before doing anything
-            # else, and land once there rather than resuming the mission.
+            # Off-layer: return to the mapped altitude first, then land rather
+            # than resume.  Re-anchor as on the success path - the return is
+            # judged from here, not from the pre-manoeuvre anchor.
             self._bypass_land_after_return = True
-            # Same reasoning as the success path: whatever displacement has
-            # already happened is behind us, and the return must be judged
-            # from here, not from the pre-manoeuvre anchor.
             self._reanchor_bypass_hold()
             self._set_state('RETURN_TO_ORIGINAL_ALTITUDE',
                             'bypass failed off-layer')
@@ -2825,7 +2766,7 @@ class CfAuto(Node):
         self.wp_index += 1
         self.replans = 0
         self._cmd()
-        # Always via SETTLE: it owns the land/end decision for every N.
+        # Always via SETTLE: it owns the land/end decision for every waypoint.
         self._set_state('SETTLE', reason)
 
 

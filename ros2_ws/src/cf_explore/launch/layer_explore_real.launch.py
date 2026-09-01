@@ -1,9 +1,9 @@
 """Real-hardware mapping with the existing ``layer_explore`` algorithm.
 
-No algorithm is started unless ``autonomy_enabled`` is explicit.  The shared
-base launch owns Crazyswarm2 and every hardware boundary.  Mapping alone adds
-the fixed ``world -> <robot>/odom`` alignment; ``layer_explore`` retains its
-existing ``map -> world`` authority and writes only below ``map_real``.
+No algorithm starts unless ``autonomy_enabled`` is explicit.  The shared base
+launch owns Crazyswarm2 and every hardware boundary.  Mapping adds the fixed
+``world -> <robot>/odom`` alignment; ``layer_explore`` still publishes
+``map -> world`` and writes only below ``map_real``.
 """
 
 import os
@@ -137,14 +137,10 @@ def generate_launch_description():
             FindPackageShare('cf_explore'), 'launch', 'real_base.launch.py'])),
         launch_arguments=_base_launch_arguments().items(),
     )
-    # RViz is part of the application, not part of the aircraft.  It is a
-    # plain Node at the top level - deliberately NOT inside _mapping_actions,
-    # which returns [] when autonomy_enabled is false - so the view is up
-    # before Left Alt and before G, and it subscribes only: it publishes no
-    # command, calls no service and cannot change any safety state.  Its
-    # lifetime is the launch's: nothing here watches operator state, armed
-    # state or the emergency latch, so L, SPACE, landing and DISARMED_STOPPED
-    # leave it running, and only launch shutdown closes it.
+    # RViz belongs to the application, not the aircraft: a top-level Node, not
+    # inside the autonomy-gated OpaqueFunction, which returns [] while
+    # autonomy_enabled is false, so the view is up before Left Alt and G.
+    # Subscribe-only; it owns no safety state and closes at launch shutdown.
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2',
         arguments=['-d', LaunchConfiguration('rviz_config')],

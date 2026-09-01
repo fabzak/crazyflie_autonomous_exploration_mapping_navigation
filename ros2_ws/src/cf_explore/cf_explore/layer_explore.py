@@ -334,7 +334,7 @@ UNKNOWN_SAFE_FREE_THRESH = 0.196
 
 def saved_cell_semantics(pixel: int, free_thresh: float,
                          occupied_thresh: float) -> str:
-    """Classify a saved pixel exactly the way Nav2 loads a trinary map."""
+    """Classify a saved pixel the way Nav2 loads a trinary map."""
     occupancy = (255.0 - float(pixel)) / 255.0
     if occupancy > occupied_thresh:
         return 'occupied'
@@ -880,35 +880,25 @@ class LayerExplorer(Node):
             'maximum_return_epsilon_m', 0.01).value)
         self.geometry_rate = float(self.declare_parameter(
             'geometry_update_rate_hz', 20.0).value)
-        # Real-hardware operator gate.  Empty (the default) keeps the
-        # existing behaviour exactly: the mission starts as soon as odometry
-        # arrives.  When set, the node holds motionless until a fresh True
-        # arrives on that topic, which is how the real operator control
-        # releases autonomy.
+        # Real-hardware operator gate: hold motionless until a True arrives
+        # on this topic.  Empty (the simulation default) starts the mission as
+        # soon as odometry does.
         self.start_gate_topic = str(self.declare_parameter(
             'start_gate_topic', '').value).strip()
-        # Bounded-validation gate.  Empty (the default) keeps the existing
-        # behaviour exactly.  When set to a state name, the mission hovers in
-        # place the first time it would leave that state instead of advancing,
-        # so a supervised experiment can end after e.g. SCAN without racing
-        # the operator's reaction time.  General on purpose: it names a state
-        # rather than hard-coding one experiment.
+        # Debug bound: when set to a state name, hover the first time the
+        # mission would leave that state instead of advancing, so a supervised
+        # run can end after e.g. SCAN.  Empty in every shipped config.
         self.halt_after_state = str(self.declare_parameter(
             'halt_after_state', '').value).strip().upper()
-        # Hard upper bound on the number of altitude layers, applied after
-        # every path that sets layer_heights.  0 (the default) means
-        # unbounded, so simulation behaviour is unchanged.
+        # Hard cap on the layer count, applied once to the provisional list
+        # PROBE builds; later paths only shorten it.  0 is unbounded.
         self.max_layers = max(0, int(self.declare_parameter(
             'max_layers', 0).value))
-        # Bounded-validation gate for a supervised multi-layer mission.  0 (the
-        # default) keeps the existing behaviour exactly.  When set to N, layer N
-        # is treated as the mission's final layer: it is still mapped, still
-        # completed and still saved through the normal production path, but the
-        # climb to layer N+1 is not started.  This exists because the layer-1
-        # save and the layer-2 ascent are otherwise a single indivisible step in
-        # _finish_layer, and halt_after_state cannot separate them - it is keyed
-        # on the source state, so halting after SELECT would stop the mission at
-        # its first frontier instead of at layer completion.
+        # Debug bound: layer N is still mapped and saved normally, but the
+        # climb to N+1 is skipped.  Separate from halt_after_state because
+        # _finish_layer saves layer N and starts the N+1 ascent in one step,
+        # and halt_after_state keys on the source state - halting after SELECT
+        # would stop the mission at its first frontier.
         self.halt_after_layer = max(0, int(self.declare_parameter(
             'halt_after_layer', 0).value))
         self.use_gazebo_full_scan = bool(self.declare_parameter(
@@ -979,19 +969,14 @@ class LayerExplorer(Node):
                     'close_obstacle_altitude_departure_m', 0.45).value))
 
         # ── fixed absolute layer altitude ────────────────────────────────
-        # A mapping layer must be a fixed horizontal plane in the room, not a
-        # constant distance to whatever happens to be underneath.  See
-        # layer_altitude.py for why odom.z cannot serve as that reference on
-        # real hardware.
-        #
-        # PROTOTYPE / NOT REAL-VALIDATION READY, and therefore DEFAULT OFF.
-        # The reconstruction in layer_altitude.py infers terrain from
-        # discontinuities in the ground distance, which compensates a sharp
-        # obstacle edge but still follows a gradual ramp and leaves a residual
-        # after a gradual edge.  That is an assumption about terrain *shape*,
-        # not an absolute altitude reference, so it must not drive a real
-        # flight.  Off, every path below is inert and behaviour is exactly
-        # what it was before this work.
+        # A mapping layer has to be a fixed horizontal plane in the room, not
+        # a constant distance to whatever happens to be underneath; see
+        # layer_altitude.py for why odom.z cannot be that reference on real
+        # hardware.  Default off: the reconstruction infers terrain from steps
+        # in the ground distance, so it compensates a sharp obstacle edge but
+        # follows a gradual ramp and leaves a residual after one.  That is an
+        # assumption about terrain shape, not an absolute reference, and must
+        # not drive a real flight.  Off, every path below is inert.
         self.layer_altitude_enabled = bool(self.declare_parameter(
             'layer_altitude_hold_enabled', False).value)
         self.layer_altitude = LayerAltitudeTracker(LayerAltitudeSettings(
@@ -1004,14 +989,14 @@ class LayerExplorer(Node):
             max_hold_speed_mps=max(1e-3, float(self.declare_parameter(
                 'layer_altitude_max_speed_mps', 0.10).value)),
         ))
-        # False during TAKEOFF, PROBE, ASCEND and LAND: altitude is being
-        # deliberately changed there, so no layer plane is being held.
+        # False while a state is commanding an altitude change; see
+        # VERTICAL_TRANSITION_STATES.  Engaged on entry to PROBE, once takeoff
+        # has settled.
         self._layer_altitude_engaged = False
-        # World Z of the plane being held, latched from the measurement at the
-        # moment the layer is engaged.  Deliberately NOT the nominal
-        # layer_heights[] entry: settling onto the nominal height is a
-        # separate altitude-profile change and is not required for
-        # terrain-independence.
+        # World Z of the held plane, latched from the measurement when the
+        # layer is engaged - not the nominal layer_heights[] entry.  Settling
+        # onto the nominal height is a separate altitude-profile change and
+        # terrain-independence does not need it.
         self._layer_reference_z: Optional[float] = None
         self._last_cmd_vz = 0.0
         self._last_ground_sample_ns: Optional[int] = None
@@ -1046,19 +1031,13 @@ class LayerExplorer(Node):
         self._up_geometry_valid = False
         self._down_geometry_valid = False
         # Scheduling isolation for the control tick.  tf2_ros' can_transform
-        # waits by sleeping 20 ms at a time on the CALLING thread (see
-        # tf2_ros/buffer.py; its own TODO notes it cannot do better), so a
-        # geometry pass that misses several exact-stamp transforms holds its
-        # thread for hundreds of milliseconds.  While _tick shared the node
-        # default mutually-exclusive group with _process_sensor_geometry, that
-        # wait blocked the 20 Hz command tick and latched the watchdog's
-        # 250 ms stale:command:receive_time - measured on the ground, disarmed,
-        # at roughly one breach every 30 s.  Separate groups let the executor
-        # run the control tick on another thread.  The published safety state
-        # is already handed over as whole-object snapshots (see the
-        # _safety_obstacles / _safety_valid_sensors assignments), and _on_odom
-        # has always written self.pose from _input_group concurrently with
-        # _tick, so this adds no new sharing pattern.
+        # waits by sleeping 20 ms at a time on the calling thread (see
+        # tf2_ros/buffer.py), so a geometry pass that misses several
+        # exact-stamp transforms holds its thread for hundreds of
+        # milliseconds.  Sharing one group with _tick starved the 20 Hz
+        # command tick and tripped the watchdog's 250 ms command-freshness
+        # limit.  Safety state crosses the groups only as whole-object
+        # snapshots (_safety_obstacles, _safety_valid_sensors).
         self._control_group = MutuallyExclusiveCallbackGroup()
         self._geometry_group = MutuallyExclusiveCallbackGroup()
         self._map_group = MutuallyExclusiveCallbackGroup()
@@ -1130,7 +1109,8 @@ class LayerExplorer(Node):
         self._floor_z = 0.0
         self._ceiling_z = float('inf')
         self._plane_estimate_filtered = False
-        # Lowest roof verified on layer 1, the discovery layer.
+        # Roof that _finalize_layer_heights would tighten the layer plan
+        # against.  Nothing assigns it, so that tightening never runs.
         self._verified_ceiling_z: Optional[float] = None
         self._layers_finalized = False
 
@@ -1494,7 +1474,8 @@ class LayerExplorer(Node):
                          if value < body_transform[0][2]]
                 self._down_clearance = (
                     body_transform[0][2] - max(below) if below else math.inf)
-                # No accepted lower surface cannot certify a descent.
+                # Without an accepted surface below, nothing certifies a
+                # descent.
                 self._down_geometry_valid = bool(below)
             self._update_layer_altitude(down_record.stamp_ns)
             if down_record.stamp_ns != self._last_safety_stamp['down']:
@@ -1577,10 +1558,10 @@ class LayerExplorer(Node):
              wz: float = 0.0, vz: Optional[float] = None):
         """Publish one body command.
 
-        ``vz=None`` means "hold the active layer plane", and is the single
-        choke point through which in-layer vertical regulation reaches the
-        vehicle.  An explicit value is a deliberate altitude *change* --
-        takeoff, ascent, descent -- and is passed through untouched.
+        ``vz=None`` means hold the active layer plane; this is the only path
+        by which in-layer vertical regulation reaches the vehicle.  An
+        explicit vz is an altitude change (takeoff, ascent, descent) and is
+        passed through untouched.
         """
         vertical = self._layer_hold_vz() if vz is None else float(vz)
         # Claim or release Z in the same tick as the command it applies to, so
@@ -1597,15 +1578,12 @@ class LayerExplorer(Node):
     def _layer_hold_vz(self) -> float:
         """Vertical velocity holding the active layer as a fixed world plane.
 
-        0.0 when no layer is engaged or the ground distance is unusable.  That
-        0.0 is a real command, not an absence of one: while this node holds Z
-        authority the adapter passes it through verbatim instead of latching
-        its own hold, so no artificial non-zero floor is needed to keep
-        ownership.  Authority is dropped in the same tick the reconstruction
-        stops being usable, which is what returns Z to the adapter.
+        0.0 when no layer is engaged or the ground distance is unusable.
+        While this node holds Z authority the adapter passes even 0.0 through
+        verbatim instead of latching its own hold, so no non-zero floor is
+        needed to keep ownership.  Authority is dropped in the same tick the
+        reconstruction stops being usable, which returns Z to the adapter.
         """
-        # getattr keeps the isolated unit fixtures that build this node with
-        # object.__new__ working, matching _odometry_is_fresh below.
         if not self._owns_z_authority():
             return 0.0
         command = self.layer_altitude.hold_velocity(
@@ -1623,10 +1601,10 @@ class LayerExplorer(Node):
     def _owns_z_authority(self) -> bool:
         """Whether this node is the vertical controller on this tick.
 
-        Exactly one controller owns Z at any moment: this node while a layer
-        plane is engaged and reconstructable, the control adapter otherwise.
-        The adapter requires a fresh heartbeat, so crashing here returns Z to
-        it rather than leaving the vehicle with no altitude controller.
+        One controller owns Z at a time: this node while a layer plane is
+        engaged and reconstructable, the control adapter otherwise.  The
+        adapter needs a fresh heartbeat, so crashing here hands Z back instead
+        of leaving the vehicle with no altitude controller.
         """
         if not (getattr(self, 'layer_altitude_enabled', False)
                 and getattr(self, '_layer_altitude_engaged', False)):
@@ -1640,9 +1618,8 @@ class LayerExplorer(Node):
         """Publish recovery translation with zero yaw, holding the layer."""
         body_x, body_y, vertical, yaw_rate = recovery_body_command(
             velocity, self.pose.yaw)
-        # recovery_body_command is documented as altitude-holding and always
-        # returns 0.0; route that through the layer hold rather than pinning
-        # the vehicle to a stale downstream z_target.
+        # recovery_body_command returns vz=0; route that through the layer
+        # hold rather than pinning the vehicle to a stale downstream z_target.
         self._cmd(vx=body_x, vy=body_y, wz=yaw_rate,
                   vz=None if vertical == 0.0 else vertical)
 
@@ -1676,10 +1653,9 @@ class LayerExplorer(Node):
     def _on_start_gate(self, msg: Bool):
         """Latch the operator's autonomy release.
 
-        One-way on purpose: the operator's abort path is the control adapter
-        and the safety watchdog, both of which stop motion without needing
-        this node to change state.  Re-closing the gate here would only
-        strand the algorithm mid-flight.
+        One-way: the operator's abort path is the control adapter and the
+        safety watchdog, which stop motion without this node changing state.
+        Re-closing the gate here would only strand the algorithm mid-flight.
         """
         if not bool(msg.data):
             return
@@ -1711,16 +1687,15 @@ class LayerExplorer(Node):
         """Hover in place; only an operator land ends a bounded validation."""
         self._cmd()
 
-    # Altitude is being deliberately changed in these states, so no layer
-    # plane is held; the downstream hold and the explicit climb/descend
-    # commands own vertical motion there.
+    # These states command an altitude change, so no layer plane is held; the
+    # commanded climb/descent and the downstream hold own vertical motion.
     VERTICAL_TRANSITION_STATES = ('TAKEOFF', 'ASCEND', 'LAND', 'DONE')
 
     def _engage_layer_altitude(self, why: str) -> None:
         """Latch the active layer as a fixed plane in the room.
 
-        Called only once the aircraft has reached *and stabilised at* a layer
-        altitude, never mid-climb and never from a transient ranger return.
+        Only called once the aircraft has settled at a layer altitude, never
+        mid-climb or off a transient ranger return.
         """
         if (not getattr(self, 'layer_altitude_enabled', False)
                 or getattr(self, '_layer_altitude_engaged', False)):
@@ -1775,8 +1750,8 @@ class LayerExplorer(Node):
                 return False
         stamp_ns = getattr(self, '_last_odom_stamp_ns', None)
         if stamp_ns is None:
-            # Compatibility for isolated legacy unit fixtures.  Constructed
-            # nodes always carry a source stamp and use the stricter branch.
+            # Legacy unit fixtures carry no source stamp; constructed nodes
+            # always do and take the stricter branch below.
             return not getattr(self, '_use_sim_time', False)
         return source_stamp_state(
             self.get_clock().now().nanoseconds, stamp_ns,
@@ -1793,9 +1768,9 @@ class LayerExplorer(Node):
         if self.pose is None:
             return
         if not self._start_released:
-            # Positively inhibited: publish an explicit zero command so the
-            # downstream freshness gates stay satisfied, and keep the
-            # vertical-motion deadline from expiring while we wait.
+            # Gated, but still publish a zero command so the downstream
+            # freshness gates stay satisfied, and hold off the vertical-motion
+            # deadline while we wait.
             self._cmd()
             self._vertical_motion_deadline = (
                 self._recovery_now() + self.vertical_motion_timeout)
@@ -2110,20 +2085,19 @@ class LayerExplorer(Node):
     def _update_layer_altitude(self, stamp_ns: Optional[int]) -> None:
         """Feed one attitude-corrected ground distance to the layer tracker.
 
-        ``_down_clearance`` is the vertical distance from the body frame to the
-        highest accepted surface below it.  Both terms come from the *same*
-        transform, so the difference is a true geometric distance and carries
-        none of the estimator's terrain-induced vertical bias -- exactly the
-        ``d`` the reconstruction in layer_altitude.py needs.
+        ``_down_clearance`` is body-frame Z minus the highest accepted surface
+        below it.  Both terms come from the same transform, so the difference
+        is a true geometric distance, free of the estimator's terrain-induced
+        vertical bias - the ``d`` layer_altitude.py reconstructs from.
         """
         dt = 0.0
         if stamp_ns is not None and self._last_ground_sample_ns is not None:
             dt = max(0.0, (stamp_ns - self._last_ground_sample_ns) * 1e-9)
         self._last_ground_sample_ns = stamp_ns
-        # Terrain can only change when the aircraft translates.  Engagement
-        # is exactly the condition "holding a layer, and free to move
-        # horizontally"; outside it the vehicle is climbing or descending over
-        # unchanged ground, so no step may be committed.
+        # Terrain only changes while the aircraft translates, and engagement
+        # is the condition "holding a layer, free to move horizontally";
+        # outside it the vehicle climbs or descends over unchanged ground, so
+        # no step may be committed.
         event = self.layer_altitude.update(
             self._down_clearance, self._down_geometry_valid,
             self._last_cmd_vz, dt,
@@ -2152,12 +2126,11 @@ class LayerExplorer(Node):
     def _layer_relative_altitude(self) -> float:
         """Altitude to judge against the layer plane.
 
-        The terrain-compensated reconstruction when it is available, otherwise
-        the estimator's own z -- which is the pre-existing behaviour and stays
-        correct whenever the aircraft is over the mission floor.  TAKEOFF and
-        LAND deliberately keep using ``pose.z``: both are referenced to the
-        surface immediately below the aircraft, which is exactly what the
-        estimator reports.
+        The terrain-compensated reconstruction when available, otherwise
+        ``pose.z``, which stays correct whenever the aircraft is over the
+        mission floor.  TAKEOFF and LAND keep using ``pose.z``: both are
+        referenced to the surface immediately below the aircraft, which is
+        what the estimator reports.
         """
         tracker = getattr(self, 'layer_altitude', None)
         world = None if tracker is None else tracker.world_z
@@ -2195,12 +2168,11 @@ class LayerExplorer(Node):
         return
 
     def _finalize_layer_heights(self):
-        """Tighten the provisional layer list with what layer 1 verified.
+        """Tighten the provisional layer list against the verified roof.
 
-        Discovery may only remove layers, never add them back.  A locally low
-        roof therefore reduces the layer count for the whole mission; that is
-        an accepted limitation of this simple sequential mapper, not something
-        layer_explore tries to route around.
+        Only removes layers, never adds them back: a locally low roof reduces
+        the layer count for the whole mission.  Accepted limitation of a
+        sequential mapper.  With no verified roof the provisional list stands.
         """
         self._layers_finalized = True
         ceiling = self._verified_ceiling_z
@@ -2244,7 +2216,7 @@ class LayerExplorer(Node):
         self._recovery_velocity = (0.0, 0.0)
         self._recovery_last_command_time = now
         self._recovery_release_since = None
-        # Re-established per attempt so a retry really starts over.
+        # Re-established per attempt so a retry starts over.
         self._recovery_target_altitude = self._active_layer_altitude()
         self._recovery_altitude_unstable_since = None
         self.get_logger().info(
@@ -2763,10 +2735,9 @@ class LayerExplorer(Node):
 def main():
     rclpy.init()
     node = LayerExplorer()
-    # One thread per mutually-exclusive group that can be busy at once
-    # (control, geometry, map, input, node default) plus headroom for the
-    # TransformListener's reentrant group.  A callback group only isolates
-    # work if a thread is free to run it.
+    # One thread per mutually-exclusive group (control, geometry, map, input,
+    # node default) plus headroom for the TransformListener's reentrant
+    # group: a group only isolates work if a thread is free to run it.
     executor = MultiThreadedExecutor(num_threads=8)
     executor.add_node(node)
     try:

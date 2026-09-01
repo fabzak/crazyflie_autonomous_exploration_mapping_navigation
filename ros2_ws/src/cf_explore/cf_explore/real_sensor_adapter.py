@@ -1,14 +1,13 @@
 """Adapt one Crazyswarm2 custom range log block to six LaserScans.
 
 Crazyswarm2's ``LogDataGeneric`` message carries values but not their variable
-names.  This adapter therefore accepts data only when the runtime
-``configured_variable_order`` parameter exactly matches the canonical order
-below.  A message must then contain exactly six values.  These two checks are
-the strongest order verification possible at this wire boundary.
+names, so the adapter accepts data only when the runtime
+``configured_variable_order`` parameter matches the canonical order below and a
+message contains exactly six values - all the order checking this wire format
+allows.
 
-Each physical ToF value becomes exactly one range in exactly one
-``sensor_msgs/LaserScan``.  Sensor frame names are parameters; this module does
-not contain or infer any Gazebo mounting transform.
+Each ToF value becomes one range in one ``sensor_msgs/LaserScan``.  Sensor
+frame names are parameters; no mounting transform lives here.
 """
 
 from dataclasses import dataclass
@@ -98,7 +97,7 @@ class AdapterSettings:
 
 @dataclass(frozen=True)
 class DecodedObservation:
-    """A completely validated, atomic six-sensor observation."""
+    """One validated six-sensor observation."""
 
     stamp_ns: int
     scans: Tuple[LaserScan, ...]
@@ -155,17 +154,16 @@ def validate_observation_time(
 
 def convert_ranges_mm(
         values: Sequence[Real], settings: AdapterSettings) -> Tuple[float, ...]:
-    """Classify and convert one strict six-value millimetre packet.
+    """Classify and convert one six-value millimetre packet.
 
-    Finite positive readings above ``range_max_m`` but below the installed
-    cflib invalid threshold are valid no-return observations and become
-    ``+inf``.  A source ``+inf`` is likewise a no-return observation.  NaN,
-    ``-inf``, negative readings and the firmware invalid sentinel become one
-    ``NaN`` observation, which means "this channel produced no measurement".
-    A reading below ``range_min_m`` is instead reported *as* ``range_min_m``:
-    it is a real detection of something closer than the rated minimum, and
-    must stay distinguishable from the no-measurement NaN.  Only structural
-    and type errors reject the complete packet.
+    Finite readings above ``range_max_m`` but below the installed cflib invalid
+    threshold, and a source ``+inf``, are no-return observations and become
+    ``+inf``.  NaN, ``-inf``, non-positive readings and the firmware invalid
+    sentinel become ``NaN``, meaning "this channel produced no measurement".  A
+    reading below ``range_min_m`` is reported as ``range_min_m``: a real
+    detection closer than the rated minimum, which has to stay distinct from
+    the no-measurement NaN.  Only structural and type errors reject the whole
+    packet.
     """
     if len(values) != len(SENSOR_NAMES):
         raise AdapterInputError(
@@ -190,11 +188,10 @@ def convert_ranges_mm(
             # Firmware could not measure this channel at all.
             converted.append(math.nan)
         elif value_mm < minimum_mm:
-            # Physically real, but nearer than the sensor's rated minimum.
-            # Reporting range_min keeps "too close" distinguishable from the
-            # NaN that means "no measurement": collapsing both onto NaN made a
-            # touching obstacle indistinguishable from open space, and made the
-            # grounded down ranger (8-13 mm measured) latch the safety
+            # Real, but nearer than the rated minimum.  Reporting range_min
+            # keeps "too close" distinct from the NaN that means "no
+            # measurement": collapsing both hides a touching obstacle, and the
+            # grounded down ranger (8-13 mm measured) then latches the safety
             # watchdog before takeoff.
             converted.append(settings.range_min_m)
         else:
@@ -280,9 +277,8 @@ class RealSensorAdapter(Node):
         sensor_qos = QoSProfile(depth=5)
         sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         sensor_qos.history = HistoryPolicy.KEEP_LAST
-        # Deliberately NOT named _publishers: rclpy.Node keeps its own list of
-        # publishers in self._publishers, and destroy_node() calls .remove()
-        # on it, which a tuple does not support.
+        # Not _publishers: rclpy.Node stores its own publisher list there and
+        # destroy_node() calls .remove() on it, which a tuple does not support.
         self._scan_publishers = tuple(
             self.create_publisher(
                 LaserScan, f'/{robot}/range/{sensor}', sensor_qos)

@@ -1,8 +1,8 @@
-"""Real saved-map localization and the existing ``cf_auto`` algorithm.
+"""Real saved-map localization for the ``cf_auto`` algorithm.
 
-Only map_server and AMCL are used from Nav2.  There is no planner, controller,
-behavior tree, or recovery server: path planning and mission control remain in
-``cf_auto``.  AMCL is the sole ``map -> <robot>/odom`` authority.
+Only map_server and AMCL are used from Nav2 - no planner, controller, behavior
+tree or recovery server; path planning and mission control stay in ``cf_auto``.
+AMCL publishes ``map -> <robot>/odom`` and is its only publisher.
 """
 
 import os
@@ -27,6 +27,7 @@ from cf_explore.real_config import validate_real_map_paths
 
 
 SENSOR_NAMES = ('front', 'right', 'back', 'left', 'up', 'down')
+# Unknown (205) must not read as free space; see cf_auto.launch.py.
 UNKNOWN_SAFE_FREE_THRESH = 0.196
 CONFIG_PLACEHOLDER_WAYPOINTS = (0.0, 0.0, 0.20)
 
@@ -114,10 +115,9 @@ def _navigation_actions(context, *args, **kwargs):
                 LaunchConfiguration('map_yamls').perform(context).split(',')
                 if item.strip()]
     if not raw_maps:
-        # Same dynamic loader as the simulation profile, pointed at map_real.
+        # Same discovery as simulation, pointed at the real map directory.
         # discover_layers refuses an empty or incomplete directory, so an
-        # unmapped real environment stops here rather than on the ground with
-        # rotors armed.
+        # unmapped environment fails at launch.
         raw_maps = [layer.yaml_path
                     for layer in layer_catalog.discover_layers(real_map_dir)]
 
@@ -128,9 +128,8 @@ def _navigation_actions(context, *args, **kwargs):
         if not Path(source).is_file():
             raise RuntimeError(f'real layer map not found: {source}')
 
-    # The layer table follows the real maps themselves - their own
-    # map_layer_N.json z_height - never the placeholder table in the params
-    # file, which exists only to give the parameters an inferable type.
+    # Layer table comes from each map's own map_layer_N.json z_height; the
+    # table in the params file is only a type placeholder.
     layers = [layer_catalog.load_layer(source) for source in source_maps]
     layer_ids, layer_heights, _yamls = layer_catalog.layer_table(layers)
     derived_maps = tuple(
@@ -285,9 +284,8 @@ def generate_launch_description():
             description=(
                 'Required comma-separated real mission x,y,z triples; the '
                 'params-file placeholder is always rejected.')),
-        # cf_auto cannot leave WAIT_FOR_INITIAL_POSE without an /initialpose,
-        # and RViz's "2D Pose Estimate" is how an operator supplies one - so
-        # the real workflow needs the same default-on viewer simulation has.
+        # RViz defaults on: "2D Pose Estimate" is how the operator supplies the
+        # /initialpose that releases WAIT_FOR_INITIAL_POSE.
         DeclareLaunchArgument(
             'rviz', default_value='true',
             description='Open RViz with the launch.  Normal interactive real '
@@ -298,11 +296,8 @@ def generate_launch_description():
             description='The same navigation view simulation uses: its fixed '
                         'frame is map and every display topic is published '
                         'identically by the real stack.'),
-        # The layer visualiser is passive - one MarkerArray publisher and one
-        # Int32 subscription, no command, service or safety state - and it
-        # feeds the "Saved Layers" display that the RViz config above always
-        # contains.  Defaulting it off would ship a permanently empty panel,
-        # so the real profile matches cf_auto.launch.py here.  It stays inside
+        # Passive marker publisher feeding the "Saved Layers" display in the
+        # RViz config above; off would ship an empty panel.  It stays inside
         # _navigation_actions, so it still cannot start before autonomy.
         DeclareLaunchArgument('layer_markers', default_value='true'),
     ]
@@ -316,33 +311,21 @@ def generate_launch_description():
             FindPackageShare('cf_explore'), 'launch', 'real_base.launch.py'])),
         launch_arguments=_base_launch_arguments().items(),
     )
-    # IncludeLaunchDescription does NOT scope: launch/actions/
-    # include_launch_description.py returns
-    # ``[*set_launch_configuration_actions, launch_description]`` with no
-    # Push/PopLaunchConfigurations around it, so every SetLaunchConfiguration
-    # performed anywhere below an include lands in THIS context and outlives
-    # the include.  real_base passes ``'rviz': 'False'`` to the official
-    # Crazyswarm2 launch to keep that stack's own viewer off; unscoped, that
-    # value overwrote the ``rviz`` argument declared above and the IfCondition
-    # below - evaluated after the include - silently read False, so RViz never
-    # started even though --show-args still reported the true default.
-    #
-    # GroupAction(scoped=True, forwarding=True) wraps the include in
-    # PushLaunchConfigurations/PopLaunchConfigurations: real_base still sees
-    # every argument forwarded from here, Crazyswarm2 still sees rviz=False
-    # inside the scope, and the pop restores this launch's own rviz before the
-    # node below is evaluated.  Ordering is not the fix - moving RViz earlier
-    # would only hide the leak from this one reader.
+    # IncludeLaunchDescription does not scope launch configurations in Humble:
+    # it returns [*set_launch_configuration_actions, launch_description] with
+    # no Push/PopLaunchConfigurations, so a SetLaunchConfiguration performed
+    # below an include lands in this context and outlives it.  real_base passes
+    # rviz False to the Crazyswarm2 launch to keep that stack's viewer off;
+    # unscoped, that overwrote the rviz argument declared above and the
+    # IfCondition below read False while --show-args still showed the real
+    # default.  The scoped group pushes and pops the configurations, and
+    # real_base still gets every argument forwarded from here.  Reordering is
+    # not a fix.
     scoped_base = GroupAction(actions=[base], scoped=True, forwarding=True)
-    # RViz is part of the application, not part of the aircraft - the same
-    # placement layer_explore_real.launch.py uses.  It is a plain Node at the
-    # top level, deliberately NOT inside _navigation_actions, which returns []
-    # while autonomy_enabled is false: the operator needs the view up before
-    # Left Alt and before G, and needs "2D Pose Estimate" to publish the
-    # /initialpose that releases WAIT_FOR_INITIAL_POSE.  It only subscribes -
-    # it publishes no command, calls no service and owns no safety state - and
-    # its lifetime is the launch's, so L, SPACE, landing and disarm leave it
-    # running and only launch shutdown closes it.
+    # RViz belongs to the application, not the aircraft: a top-level Node, not
+    # inside the autonomy-gated OpaqueFunction, which returns [] while
+    # autonomy_enabled is false, so the view is up before Left Alt and G.
+    # Subscribe-only; it owns no safety state and closes at launch shutdown.
     rviz = Node(
         package='rviz2', executable='rviz2', name='rviz2',
         arguments=['-d', LaunchConfiguration('rviz_config')],

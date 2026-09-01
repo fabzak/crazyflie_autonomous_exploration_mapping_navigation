@@ -1,17 +1,13 @@
-"""RViz lifecycle for the real navigation launch.
+"""RViz in the real navigation launch.
 
-``cf_auto`` cannot leave ``WAIT_FOR_INITIAL_POSE`` until someone publishes an
-``/initialpose``, and RViz's "2D Pose Estimate" tool is how an operator does
-that.  Simulation has always opened RViz by default; the real launch did not,
-which forced a second terminal for the one step the mission cannot start
-without.  These tests pin the fix and, more importantly, its *placement*: the
-viewer belongs to the application, not to the aircraft, so it must be up
-before ``Left Alt`` and before ``G``.
+``cf_auto`` stays in ``WAIT_FOR_INITIAL_POSE`` until an ``/initialpose``
+arrives, and RViz's "2D Pose Estimate" tool is how the operator sends it - so
+the viewer must be a top-level ``Node``, up before ``Left Alt`` and ``G``, and
+not part of the autonomy-gated half.
 
-Companion to test_real_rviz_launch.py, which makes the same guarantees for
-``layer_explore_real``.  Both build the real ``LaunchDescription`` and inspect
-actual actions and conditions rather than grepping source text.  Nothing here
-starts a radio, a node or a ROS graph.
+Companion to test_real_rviz_launch.py for ``layer_explore_real``.  Both build
+the real ``LaunchDescription`` and inspect actions and conditions rather than
+source text.
 """
 
 import importlib.util
@@ -29,8 +25,7 @@ SHARE = get_package_share_directory('cf_explore')
 PACKAGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RVIZ_CONFIG = os.path.join(SHARE, 'config', 'cf_auto.rviz')
 
-#: Everything the shared config displays, and the node that publishes it in
-#: BOTH stacks.  This is the evidence that one config serves both.
+#: Displays in the shared config; both stacks publish all of these.
 SHARED_TOPICS = {
     'Map': '/map',
     'LaserScan': '/scan',
@@ -86,7 +81,7 @@ def test_an_rviz_enable_argument_is_declared(description):
 
 
 def test_rviz_is_enabled_by_default(description):
-    """The whole point: no second terminal for normal real operation."""
+    """Normal real operation opens RViz without a second terminal."""
     assert _default(description, 'rviz').lower() == 'true'
     context = LaunchContext()
     context.launch_configurations['rviz'] = _default(description, 'rviz')
@@ -100,7 +95,7 @@ def test_rviz_can_be_disabled_for_headless_runs(description):
 
 
 def test_the_argument_name_matches_the_simulation_launch(description):
-    """Operator parity: cf_auto.launch.py exposes exactly `rviz`."""
+    """Operator parity: cf_auto.launch.py exposes the same `rviz` argument."""
     simulation = _load('cf_auto.launch.py').generate_launch_description()
     assert _default(simulation, 'rviz').lower() == 'true'
     assert _declared(description, 'rviz').name == \
@@ -133,12 +128,12 @@ def test_rviz_uses_the_installed_shared_navigation_config(description):
 
 
 def test_the_shared_config_is_installed_by_setup_py():
-    """Reuse only works if the file actually reaches the share directory."""
+    """Reuse only works if the file reaches the share directory."""
     setup = open(os.path.join(PACKAGE, 'setup.py')).read()
     assert "'config/cf_auto.rviz'" in setup
 
 
-# -- the config is genuinely generic, which is why reuse is legitimate -------
+# -- the config is generic, which is why reuse is legitimate -----------------
 
 
 def test_the_shared_config_has_no_simulation_specific_frame(description):
@@ -187,8 +182,7 @@ def test_rviz_does_not_wait_for_arm_or_autonomy(real_launch, description):
     """The view must be up before Left Alt and before G.
 
     _navigation_actions is the autonomy half of the launch and returns nothing
-    at all while autonomy_enabled is false.  RViz must therefore NOT come from
-    there - it has to be a top-level action.
+    while autonomy_enabled is false, so RViz cannot come from there.
     """
     context = LaunchContext()
     context.launch_configurations['autonomy_enabled'] = 'false'
@@ -211,11 +205,9 @@ def test_rviz_is_a_viewer_and_cannot_actuate(description):
 
 
 def test_no_launch_action_can_be_triggered_by_aircraft_state():
-    """No event handler and no Shutdown action in the real navigation launch.
-
-    This is what guarantees L, SPACE, landing and disarm cannot terminate the
-    viewer: there is no mechanism by which aircraft state reaches a launch
-    action.  ros2 launch closing its own processes is what closes RViz.
+    """No event handler and no Shutdown action, so no aircraft state can reach
+    a launch action: L, SPACE, landing and disarm cannot close the viewer.
+    Only ros2 launch's own shutdown does.
     """
     description = _load('cf_auto_real.launch.py').generate_launch_description()
     for entity in description.entities:
@@ -233,11 +225,9 @@ def test_wait_for_initial_pose_is_still_the_boot_state():
 
 
 def test_nothing_in_the_real_launch_fabricates_an_initial_pose():
-    """RViz must be the only source; a launch-published pose would bypass the
-    gate the operator is supposed to close deliberately.
-
-    Comments are stripped first - the launch explains the /initialpose
-    workflow in prose, and mentioning it is not publishing it.
+    """RViz must be the only source of /initialpose; a launch-published pose
+    would bypass the operator gate.  Comments are stripped first: the launch
+    describes the workflow in prose without publishing anything.
     """
     for name in ('cf_auto_real.launch.py', 'real_base.launch.py'):
         source = open(os.path.join(PACKAGE, 'launch', name)).read()
@@ -250,7 +240,7 @@ def test_nothing_in_the_real_launch_fabricates_an_initial_pose():
 
 
 def test_opening_rviz_does_not_imply_authorization(description):
-    """The gates that actually arm the aircraft keep their fail-closed values."""
+    """The gates that arm the aircraft keep their fail-closed values."""
     for name, expected in (('autonomy_enabled', 'false'),
                            ('dry_run', 'true'),
                            ('hardware_identity_confirmed', 'false'),
@@ -289,7 +279,7 @@ def test_simulation_launch_rviz_behaviour_is_unchanged():
 
 
 def test_both_launches_now_open_the_same_view():
-    """The point of reuse: one navigation visualization for both platforms."""
+    """One navigation visualization serves both platforms."""
     simulation = _load('cf_auto.launch.py').generate_launch_description()
     real = _load('cf_auto_real.launch.py').generate_launch_description()
     assert _default(simulation, 'rviz_config') == _default(real, 'rviz_config')
@@ -316,26 +306,21 @@ def test_the_layer_visualizer_is_passive():
 
 
 def test_the_layer_visualizer_still_waits_for_autonomy(real_launch):
-    """Parity must not have promoted it out of the autonomy-gated half."""
+    """The parity default must not promote it out of the autonomy-gated half."""
     context = LaunchContext()
     context.launch_configurations['autonomy_enabled'] = 'false'
     assert real_launch._navigation_actions(context) == []
 
 
-# ── the launch-context leak this launch was actually bitten by ────────────
+# ── launch-configuration scoping ──────────────────────────────────────────
 #
-# ``IncludeLaunchDescription`` does NOT scope in Humble: its ``execute``
-# returns ``[*set_launch_configuration_actions, launch_description]`` with no
-# Push/PopLaunchConfigurations, so a SetLaunchConfiguration performed anywhere
-# below an include lands in the INCLUDING context and outlives the include.
-# real_base passes ``'rviz': 'False'`` to the official Crazyswarm2 launch to
-# keep that stack's viewer off; unscoped, that overwrote this launch's own
-# ``rviz`` argument and the RViz node - evaluated after the include - silently
-# read False.  --show-args still reported the true default, so the symptom was
-# only ever visible at runtime as a missing "[rviz2-*] process started".
-#
-# These tests execute the real actions against a real LaunchContext instead of
-# reading the source, so they fail if the scoping is ever removed.
+# ``IncludeLaunchDescription`` does not scope in Humble: it has no
+# Push/PopLaunchConfigurations, so a SetLaunchConfiguration below an include
+# lands in the including context and outlives it.  real_base passes
+# ``'rviz': 'False'`` to the Crazyswarm2 launch, which without a scoped
+# GroupAction overwrites this launch's own ``rviz`` argument - and --show-args
+# still reports the true default, so it shows up only at runtime as a missing
+# rviz2 process.
 
 
 def _walk(entity, context, budget=None):
@@ -372,7 +357,7 @@ def _context_at_the_rviz_node(description, **configurations):
 
 def test_including_real_base_does_not_overwrite_the_parent_rviz_argument(
         description):
-    """The regression itself: rviz must survive the real_base include."""
+    """rviz must survive the real_base include."""
     context = _context_at_the_rviz_node(description)
     assert context.launch_configurations.get('rviz') == 'true', (
         'real_base leaked its Crazyswarm2 rviz argument into this launch; '
@@ -380,20 +365,19 @@ def test_including_real_base_does_not_overwrite_the_parent_rviz_argument(
 
 
 def test_rviz_condition_still_resolves_true_after_the_include(description):
-    """What the operator actually cares about: the viewer starts."""
     context = _context_at_the_rviz_node(description)
     assert _rviz_node(description).condition.evaluate(context) is True
 
 
 def test_rviz_false_still_wins_after_the_include(description):
-    """Scoping must not have made the argument unsettable."""
+    """Scoping must not make the argument unsettable."""
     context = _context_at_the_rviz_node(description, rviz='false')
     assert context.launch_configurations.get('rviz') == 'false'
     assert _rviz_node(description).condition.evaluate(context) is False
 
 
 def test_the_real_base_include_is_wrapped_in_a_scoped_group(description):
-    """Structural companion: the mechanism, not just its effect."""
+    """The scoping mechanism itself, not just its effect."""
     from launch.actions import GroupAction, IncludeLaunchDescription
 
     groups = [e for e in description.entities if isinstance(e, GroupAction)]
@@ -408,7 +392,7 @@ def test_the_real_base_include_is_wrapped_in_a_scoped_group(description):
 
 
 def test_real_base_still_receives_every_hardware_argument(real_launch):
-    """Scoping must not have cut real_base off from its arguments."""
+    """Scoping must not cut real_base off from its arguments."""
     forwarded = real_launch._base_launch_arguments()
     for name in ('robot_name', 'radio_uri', 'hardware_identity_confirmed',
                  'autonomy_enabled', 'dry_run', 'extrinsics_verified',
@@ -419,10 +403,8 @@ def test_real_base_still_receives_every_hardware_argument(real_launch):
 
 
 def test_exactly_one_rviz_actually_starts_and_it_is_ours(description):
-    """Crazyswarm2 ships its own viewer; scoping must keep it off.
-
-    Walks the WHOLE tree and evaluates every rviz2 node's condition, so a
-    duplicate viewer or a re-enabled Crazyswarm2 viewer both fail here.
+    """Crazyswarm2 ships its own viewer; scoping must keep it off.  Walks the
+    whole tree and evaluates every rviz2 node's condition.
     """
     context = LaunchContext()
     verdicts = []

@@ -1,8 +1,7 @@
-"""Gates 2 and 3: multi-layer route execution and downward transitions.
+"""Multi-layer route execution and downward transitions.
 
-Builds on the ``make_node`` harness from ``test_cf_auto_landing`` - a real
-``CfAuto`` with only its ROS plumbing stubbed - so the methods exercised here
-are the shipped ones.
+Uses the ``make_node`` harness from ``test_cf_auto_landing``: a real ``CfAuto``
+with only its ROS plumbing stubbed.
 """
 
 import math
@@ -78,7 +77,7 @@ def transition_node(**overrides):
 
 
 def states_entered(node):
-    """States the node moved into; empty when it deliberately stayed put."""
+    """States the node moved into; empty when it stayed put."""
     return [state for state, _ in getattr(node, '_transitions_log', [])]
 
 
@@ -377,10 +376,10 @@ def test_plan_target_arms_only_one_adjacent_hop_at_a_time():
 
 
 def test_plan_target_ignores_live_marks_on_the_working_grid():
-    """A live obstacle must not push the STATIC planner onto another layer."""
+    """A live obstacle must not push the static planner onto another layer."""
     grids = {0: make_grid(open_rows(20, 20)), 1: make_grid(open_rows(20, 20))}
     node = routing_node(grids, [0.5, 0.55], 0, (0.05, 0.05, 0.0))
-    # The working grid the follower uses is a different object entirely.
+    # The working grid the follower uses is a separate object.
     node.grid = make_grid(open_rows(20, 20))
     node.grid.mark_blocked_disc(0.95, 0.05, 0.3)
     target = node._plan_target((1.85, 0.05, 0.5), 0)

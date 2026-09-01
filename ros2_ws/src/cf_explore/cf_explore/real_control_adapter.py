@@ -4,8 +4,8 @@
 The navigation algorithms publish body-frame XY velocity, world-frame Z
 velocity and ROS yaw rate.  Crazyswarm2's ``VelocityWorld`` instead expects
 world-frame XYZ velocity and the cflib yaw-rate sign/unit convention.  The
-pure :class:`RealControlCore` below owns that conversion and every freshness
-gate; the ROS node is deliberately only an asynchronous I/O shell.
+pure :class:`RealControlCore` below owns that conversion and the freshness
+gates; the ROS node is only an asynchronous I/O shell.
 
 ``dry_run`` defaults to true.  In dry-run mode no hardware-facing publisher or
 service client is created and therefore this module cannot command a vehicle.
@@ -80,22 +80,22 @@ class ControlConfig:
     arm_confirmation_timeout: float = 3.0
     takeoff_confirmation_timeout: float = 8.0
     landing_confirmation_timeout: float = 8.0
-    # How many extra times notify/land may be re-issued before the landing
-    # attempt is finally abandoned.  Bounds every landing path.
+    # Extra notify/land re-issues before a grounded landing attempt is given
+    # up.  A vehicle still believed airborne keeps retrying past this limit,
+    # see tick() and service_result().
     land_retry_limit: int = 2
-    # Real hardware only: refuse to leave GROUND until an operator has armed
-    # the vehicle and released the autonomy gate.  Defaults to False so the
-    # simulation and every existing test keep their current behaviour.
+    # Real hardware only: stay on GROUND until the operator has armed the
+    # vehicle and released the autonomy gate.  False keeps simulation
+    # behaviour.
     require_operator_authorization: bool = False
     # How long an operator authorization heartbeat stays valid.  A stopped
     # heartbeat must revoke authorization, so this is a freshness bound, not
     # a latch.
     operator_timeout_sec: float = 0.50
-    # Vertical-authority handover.  When autonomy holds Z authority the
-    # adapter passes vz through verbatim -- including an exact 0.0 -- and never
-    # latches z_target.  Fail-closed: absent, stale or false authority returns
-    # Z to the adapter's own hold, which is the pre-2026-08-26 validated
-    # behaviour.  See autonomy_owns_z().
+    # Vertical-authority handover.  While autonomy holds Z the adapter passes
+    # vz through verbatim, an exact 0.0 included, and does not latch z_target.
+    # Absent, stale or false authority returns Z to the adapter's own hold.
+    # See autonomy_owns_z().
     z_authority_timeout_sec: float = 0.50
 
     def __post_init__(self) -> None:
@@ -174,29 +174,27 @@ def body_to_world(vx_body: float, vy_body: float,
 
 
 def ros_yaw_rate_to_cflib(yaw_rate_rad: float) -> float:
-    """Convert positive-CCW ROS rad/s to VelocityWorld.yaw_rate deg/s.
+    """Convert ROS yaw rate (rad/s, CCW positive) to VelocityWorld deg/s.
 
-    This is a pure unit conversion: no sign flip.  Measured on the real
-    aircraft (CRTP protocol 8, props removed, 2026-08-22) by commanding a
-    known VelocityWorld.yaw_rate and reading the firmware's own decoded
-    setpoint plus the slope of its integrated heading target:
+    Unit conversion only, no sign flip.  Measured on the aircraft (CRTP
+    protocol 8, props removed) by commanding a known VelocityWorld.yaw_rate
+    and reading the firmware's decoded setpoint plus the slope of its
+    integrated heading target:
 
         +20.0 deg/s -> ctrltarget.yaw +20.00, d(controller.yaw -
                        stabilizer.yaw)/dt = +18.0 deg/s
         -20.0 deg/s -> ctrltarget.yaw -20.00, slope -17.2 deg/s
 
-    ``stabilizer.yaw`` was independently verified CCW-positive by physically
-    rotating the airframe counter-clockwise (+100.9 deg on odometry), so a
-    positive VelocityWorld.yaw_rate turns the aircraft counter-clockwise -
-    the same sense as ROS REP-103.
+    ``stabilizer.yaw`` was checked CCW-positive by rotating the airframe by
+    hand (+100.9 deg on odometry), so a positive VelocityWorld.yaw_rate turns
+    the aircraft counter-clockwise, the same sense as ROS REP-103.
 
-    This holds on both CRTP paths: cflib already absorbs the version
-    difference, packing ``-yawrate`` with TYPE_VELOCITY_WORLD_LEGACY for
-    protocol <= 8 (whose firmware decoder negates again) and ``+yawrate``
-    with TYPE_VELOCITY_WORLD otherwise, so the argument convention is stable.
+    Both CRTP paths agree: cflib absorbs the version difference, packing
+    ``-yawrate`` with TYPE_VELOCITY_WORLD_LEGACY for protocol <= 8 (whose
+    firmware decoder negates again) and ``+yawrate`` with
+    TYPE_VELOCITY_WORLD otherwise.
 
-    The previous ``-math.degrees(...)`` made a positive ROS yaw rate turn the
-    aircraft clockwise, which would have driven every SCAN sweep backwards.
+    Do not reintroduce the negation: it turns every SCAN sweep backwards.
     """
     if not math.isfinite(yaw_rate_rad):
         raise ValueError('yaw rate must be finite')
@@ -204,7 +202,7 @@ def ros_yaw_rate_to_cflib(yaw_rate_rad: float) -> float:
 
 
 def yaw_conversion_diagnostic(yaw_rate_rad: float) -> str:
-    """Return the explicit dry-run sign/unit diagnostic required for bringup."""
+    """Human-readable yaw sign/unit line for the dry-run log."""
     converted = ros_yaw_rate_to_cflib(yaw_rate_rad)
     return (f'ROS yaw {yaw_rate_rad:.6f} rad/s -> '
             f'cflib yaw {converted:.6f} deg/s')
@@ -246,8 +244,7 @@ class RealControlCore:
         self._permit_at: Optional[float] = None
         self._operator_authorized = False
         self._operator_at: Optional[float] = None
-        # Reported once per run so a suppressed autonomous takeoff is visible
-        # in the log rather than silently ignored.
+        # Logged once per run so a suppressed takeoff is visible.
         self.unauthorized_start_attempts = 0
         self._supervisor = 0
         self._status_at: Optional[float] = None
@@ -335,9 +332,8 @@ class RealControlCore:
     def update_z_authority(self, owned: bool, now: float) -> None:
         """Record one autonomy vertical-authority heartbeat.
 
-        Never latched: :meth:`autonomy_owns_z` also requires freshness, so a
-        stopped or crashed autonomy node returns Z to this adapter rather than
-        leaving the vehicle with no altitude controller at all.
+        Not a latch: :meth:`autonomy_owns_z` also requires freshness, so a
+        dead autonomy node returns Z to this adapter's own hold.
         """
         if not math.isfinite(now):
             self._fail('non-finite z authority receipt time', 0.0)
@@ -346,7 +342,7 @@ class RealControlCore:
         self._z_authority_at = now
 
     def autonomy_owns_z(self, now: float) -> bool:
-        """Whether autonomy is the vertical controller on this exact tick."""
+        """Whether autonomy is the vertical controller on this tick."""
         return bool(self._z_authority and self._fresh(
             self._z_authority_at, self.config.z_authority_timeout_sec, now))
 
@@ -361,10 +357,9 @@ class RealControlCore:
                                       now: float) -> None:
         """Record one operator authorization heartbeat.
 
-        Authorization is never latched: :meth:`operator_authorized` also
-        requires the heartbeat to be fresh, so a stopped or crashed operator
-        node revokes it and an airborne vehicle is landed by the normal
-        gate-failure path.
+        Not a latch: :meth:`operator_authorized` also requires freshness, so a
+        dead operator node revokes and an airborne vehicle lands via the
+        normal gate-failure path.
         """
         if not math.isfinite(now):
             self._fail('non-finite operator authorization receipt time', 0.0)
@@ -373,7 +368,7 @@ class RealControlCore:
         self._operator_at = now
 
     def operator_authorized(self, now: float) -> bool:
-        """Whether autonomous motion is authorized on this exact tick."""
+        """Whether autonomous motion is authorized on this tick."""
         if not self.config.require_operator_authorization:
             return True
         return bool(self._operator_authorized and self._fresh(
@@ -456,9 +451,9 @@ class RealControlCore:
                           FlightState.LOW_LEVEL):
             failure = self._gate_failure(now)
             if failure is not None:
-                # An Arm request may already have reached the server even when
-                # its empty response has not returned.  Use the same explicit
-                # notify/land handover for every post-GROUND gate failure.
+                # An Arm request may already have reached the server even if
+                # its empty response has not returned, so every post-GROUND
+                # gate failure takes the notify/land handover.
                 self._set_state(FlightState.LAND_HANDOVER, now, failure)
                 return
 
@@ -493,9 +488,9 @@ class RealControlCore:
                         f'landing not confirmed; retry '
                         f'{self.land_attempts}/{self.config.land_retry_limit}')
                 elif self.airborne():
-                    # Giving up on an airborne vehicle is never safer than
-                    # asking it to land again.  Keep re-issuing; the operator
-                    # emergency stop is the human backstop.
+                    # Still airborne: keep re-issuing land past the retry
+                    # limit.  The operator SPACE cut is the backstop, not
+                    # this counter.
                     self.land_attempts += 1
                     self.land_request_accepted = False
                     self.state_since = now
@@ -541,10 +536,9 @@ class RealControlCore:
             vx_body, vy_body, self.config.max_xy_speed)
         vx_world, vy_world = body_to_world(vx_body, vy_body, yaw)
         if self.autonomy_owns_z(now):
-            # Autonomy is the single vertical controller.  An exact 0.0 is a
-            # real command meaning "do not move vertically", not an absence of
-            # one, so the hold must not re-latch a terrain-contaminated
-            # odom.z behind autonomy's back.
+            # While autonomy owns Z, an exact 0.0 is a real "hold height"
+            # command, not a missing one - re-latching z_target here would
+            # capture a terrain-contaminated odom.z.
             vz_world = clip(vz_requested, self.config.max_vz)
             self.z_target = None
         elif abs(vz_requested) > self.config.z_command_epsilon:
@@ -594,9 +588,9 @@ class RealControlCore:
                 self._set_state(FlightState.LAND_HANDOVER, now,
                                 f'{operation} service failed')
             elif operation in ('notify', 'land'):
-                # A failed landing call must be retried, not abandoned: the
-                # vehicle is still airborne.  required_service() re-issues
-                # while the corresponding *_accepted flag stays False.
+                # Retry rather than abandon an airborne vehicle:
+                # required_service() re-issues while the matching *_accepted
+                # flag stays False.
                 if (self.land_attempts < self.config.land_retry_limit
                         or self.airborne()):
                     self.land_attempts += 1
@@ -740,10 +734,7 @@ class RealControlAdapter(Node):
         self.create_subscription(
             Bool, operator_authorization_topic, self._on_operator,
             operator_qos)
-        # Same shape as the operator gate: transient-local so a late adapter
-        # sees the current claim, but freshness is still required so a dead
-        # autonomy node returns Z to this adapter instead of leaving the
-        # vehicle with no altitude controller.
+        # Same QoS shape and freshness rule as the operator gate above.
         self.create_subscription(
             Bool, z_authority_topic, self._on_z_authority, operator_qos)
         self.create_service(Land, self.virtual_land_service,
@@ -756,9 +747,8 @@ class RealControlAdapter(Node):
             String, '/real_control/state', state_qos)
 
         self._velocity_pub = None
-        # Deliberately NOT named _clients: rclpy.Node keeps its own list of
-        # service clients in self._clients, and shadowing it makes the very
-        # next create_client() call fail with AttributeError.
+        # Not _clients: rclpy.Node stores its own client list there, and
+        # shadowing it makes the next create_client() raise AttributeError.
         self._service_clients = {}
         if not self.dry_run:
             if self.virtual_land_service == f'{self.hardware_prefix}/land':
@@ -839,23 +829,21 @@ class RealControlAdapter(Node):
         return response
 
     def shutdown_land_deadline(self) -> float:
-        """Absolute bound on the interrupt-time landing attempt.
+        """Bound on the interrupt-time landing attempt.
 
         ``ros2 launch`` escalates SIGINT to SIGTERM after ``sigterm_timeout``
         (5 s by default) and the same Ctrl-C also kills ``crazyflie_server``,
-        so the land services disappear almost immediately.  A deadline longer
-        than that window is a fiction; keep it short and treat the operator
-        L key as the real abort path.
+        so the land services vanish almost at once.  Keep this short; the
+        operator L key is the real abort path.
         """
         return max(0.5, self.shutdown_land_timeout)
 
     def land_before_shutdown(self) -> None:
-        """Command a bounded controlled landing on an airborne interrupt.
+        """Bounded controlled landing on an airborne interrupt.
 
-        Tearing the node down while the vehicle is flying would simply stop
-        the setpoint stream, so an interrupt drives the same notify/land
-        handover a normal landing uses.  The wait is always bounded, and a
-        second interrupt gives up immediately.
+        Tearing the node down in flight would just stop the setpoint stream,
+        so an interrupt runs the normal notify/land handover.  A second
+        interrupt gives up.
         """
         if not self.core.airborne():
             return
@@ -908,11 +896,10 @@ class RealControlAdapter(Node):
         self._future = None
         now = self._now()
         self.core.service_result(operation, success, now)
-        # The setpoint stream is already stopped by the time notify runs, and
-        # the firmware cuts the motors 2.0 s after the last setpoint
-        # (COMMANDER_WDT_TIMEOUT_SHUTDOWN).  Issuing the follow-up service
-        # here instead of waiting for the next control tick removes a whole
-        # control period from that budget.
+        # The firmware cuts the motors 2.0 s after the last setpoint
+        # (COMMANDER_WDT_TIMEOUT_SHUTDOWN) and the stream is already stopped,
+        # so chain the follow-up service here instead of losing a control
+        # period.
         if self.core.state in (FlightState.LAND_HANDOVER,
                                FlightState.HL_LAND):
             self._drive_service(now)
@@ -950,9 +937,8 @@ class RealControlAdapter(Node):
         try:
             self._tick_unguarded()
         except Exception as error:
-            # Letting this propagate tears down the executor with the vehicle
-            # still flying.  Route it into the same controlled-landing path
-            # every other fault uses.
+            # Propagating would tear down the executor mid-flight; route it
+            # into the normal controlled-landing path instead.
             self.get_logger().error(f'control tick failed: {error!r}')
             try:
                 self.core._fail(f'control tick exception: {error!r}',
@@ -1009,7 +995,7 @@ def main(args=None) -> None:
     try:
         rclpy.spin(node)
     except BaseException:
-        # Any exit while airborne gets the same bounded controlled landing.
+        # Any exit while airborne gets the bounded controlled landing.
         node.land_before_shutdown()
     finally:
         node.destroy_node()
