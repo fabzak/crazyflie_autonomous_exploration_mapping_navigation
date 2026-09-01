@@ -182,7 +182,10 @@ class OperatorSupervisor:
         self.disarm_request_pending = False
         self.land_request_pending = False
         self.emergency_request_pending = False
+        #: The last service call that SUCCEEDED.  A rejected call clears it
+        #: so the DISARMED_STOPPED guard below can ask again.
         self._completed_service: Optional[str] = None
+        self._disarm_requested_at: Optional[float] = None
 
     # ── telemetry ─────────────────────────────────────────────────────────
 
@@ -433,7 +436,10 @@ class OperatorSupervisor:
         """Record one completed hardware request."""
         if operation != self.required_service():
             return ''
-        self._completed_service = operation
+        # Only a successful call counts as issued.  DISARMED_STOPPED uses this
+        # to avoid re-requesting a disarm it already made; latching it on a
+        # rejected call would leave the motors live on the floor with no retry.
+        self._completed_service = operation if success else None
         if operation == 'emergency':
             self.emergency_request_pending = False
             return ('emergency stop delivered'
@@ -533,11 +539,23 @@ class OperatorSupervisor:
                            ' - press SPACE if the aircraft is still flying')
                 self.state_since = now
         elif self.state == OperatorState.DISARMED_STOPPED:
-            # Never leave a brushless airframe armed on the floor.
+            # Never leave a brushless airframe armed on the floor.  A disarm
+            # cuts the motors instantly, so it needs positive grounded
+            # evidence on THIS tick, not just the evidence that got us here.
+            # A rejected call is retried, but only every
+            # disarm_confirmation_timeout_sec: the request goes over the same
+            # radio link that carries the status and odometry this guard
+            # depends on.
+            due = (self._disarm_requested_at is None
+                   or now - self._disarm_requested_at
+                   >= self.config.disarm_confirmation_timeout_sec)
             if (self.confirmed_armed(now)
+                    and self.confirmed_grounded(now)
                     and not self.disarm_request_pending
-                    and self._completed_service != 'disarm'):
+                    and self._completed_service != 'disarm'
+                    and due):
                 self.disarm_request_pending = True
+                self._disarm_requested_at = now
                 message = ('post-landing disarm requested; motors must not '
                            'stay live on the ground')
         return OperatorDecision(self.state, self.authorized(now), message)

@@ -125,3 +125,35 @@ def test_real_algorithm_configs_do_not_reference_simulation_maps():
     parameters = auto['cf_auto']['ros__parameters']
     assert parameters['use_sim_time'] is False
     assert parameters['waypoints_xyz'] == [0.0, 0.0, 0.20]
+
+
+def test_map_real_holds_no_copy_of_a_simulation_map():
+    """No file in map_real may be byte-identical to a simulation map.
+
+    Nothing in the launch preflight reads a pixel: discover_layers checks
+    structure and validate_real_map_paths checks path topology, so "real" is
+    asserted by directory name alone.  Simulation maps committed into map_real
+    therefore pass every gate, and AMCL would localize the physical aircraft
+    against the Gazebo world.  A genuine flown map still passes this test.
+    """
+    import hashlib
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    simulation = {digest(p): p.name
+                  for p in (PACKAGE_ROOT.parents[1] / 'map').rglob('map_layer_*')
+                  if p.is_file()}
+    # A missing reference set would make this guard pass vacuously.
+    assert len(simulation) >= 9, (
+        f'expected the committed simulation maps as a reference set, '
+        f'found {len(simulation)}')
+    real_dir = PACKAGE_ROOT.parents[1] / 'map_real'
+    # rglob on both sides: map_yamls may point at a subdirectory of map_real.
+    copied = [(str(p.relative_to(real_dir)), simulation[digest(p)])
+              for p in sorted(real_dir.rglob('map_layer_*')) if p.is_file()
+              and digest(p) in simulation]
+    assert not copied, (
+        f'map_real contains simulation map data: {copied}. Remove it; an '
+        f'empty map_real makes cf_auto_real refuse to launch, which is the '
+        f'intended fail-closed behaviour for an unmapped environment.')

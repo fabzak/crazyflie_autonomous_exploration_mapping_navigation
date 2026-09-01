@@ -53,6 +53,14 @@ cf_auto:
     ascend_min_up_clearance_m: 0.30
     descend_min_down_clearance_m: 0.30
 
+    # [POTREBNA PROVJERA] Stated rather than inherited.  Without this the real
+    # profile falls back to the code default of 4 cells (0.20 m), which is less
+    # standoff than layer_explore's CLEARANCE_M 0.30 m used to carve the free
+    # space of the very maps being flown.  6 cells = 0.30 m matches the mapper;
+    # simulation uses 10 (0.50 m) to cover AMCL error, so raise this toward 10
+    # once the real room is measured and the real AMCL error is known.
+    inflation_cells: 6
+
     # Fail closed on stale pose or range data.
     pose_timeout_sec: 0.35
     up_maximum_age_sec: 0.50

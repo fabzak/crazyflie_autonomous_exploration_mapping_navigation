@@ -605,6 +605,127 @@ def test_confirmed_landing_disarms_the_motors():
     assert core.required_service() is None
 
 
+def test_rejected_post_landing_disarm_is_retried():
+    """A rejected disarm must not latch: the motors are still live.
+
+    The DISARMED_STOPPED guard exists so a disarm already issued is not
+    re-sent every tick.  Recording a *rejected* call as issued turned that
+    guard into a permanent one, so a brushless airframe reporting IS_ARMED on
+    the floor was never asked again and the operator was never warned again.
+    """
+    core = supervisor()
+    now = run_autonomy(core)
+    feed(core, now + 1.0, ARMED_FLYING, height=0.40)
+    core.on_key(KeyEvent.LAND, now + 1.0)
+    core.service_result('land', True, now + 1.0)
+    feed(core, now + 4.0, ARMED_READY, height=0.02)
+    core.tick(now + 4.0)
+    assert core.state == OperatorState.DISARMED_STOPPED
+    core.tick(now + 4.1)
+    assert core.required_service() == 'disarm'
+    assert core.service_result('disarm', False, now + 4.2) == \
+        'DISARM FAILED: service call rejected'
+
+    # Not immediately - the retry is rate-limited to the confirmation period.
+    feed(core, now + 4.5, ARMED_READY, height=0.02)
+    core.tick(now + 4.5)
+    assert core.required_service() is None
+
+    # Still armed on the floor a period later: the request must come back.
+    later = now + 4.2 + core.config.disarm_confirmation_timeout_sec
+    feed(core, later, ARMED_READY, height=0.02)
+    decision = core.tick(later)
+    assert core.required_service() == 'disarm'
+    assert 'disarm' in decision.message
+
+    # And it stops for good once the call actually succeeds.
+    assert core.service_result('disarm', True, later + 0.1) == \
+        'ground disarm commanded'
+    feed(core, later + 10.0, GROUNDED_READY, height=0.02)
+    core.tick(later + 10.0)
+    assert core.required_service() is None
+
+
+def test_disarm_retry_never_fires_while_the_vehicle_is_airborne():
+    """A disarm cuts the motors instantly: never ask without ground evidence.
+
+    DISARMED_STOPPED can be entered from a touchdown that the supervisor later
+    contradicts.  Retrying on the stale grounded evidence that got us into the
+    state would request a motor cut in the air.
+    """
+    core = supervisor()
+    now = run_autonomy(core)
+    feed(core, now + 1.0, ARMED_FLYING, height=0.40)
+    core.on_key(KeyEvent.LAND, now + 1.0)
+    core.service_result('land', True, now + 1.0)
+    feed(core, now + 4.0, ARMED_READY, height=0.02)
+    core.tick(now + 4.0)
+    assert core.state == OperatorState.DISARMED_STOPPED
+    core.tick(now + 4.1)
+    core.service_result('disarm', False, now + 4.2)
+
+    # The supervisor now contradicts the touchdown: still up, still armed.
+    feed(core, now + 10.0, ARMED_FLYING, height=0.80)
+    decision = core.tick(now + 10.0)
+    assert core.airborne(now + 10.0) is True
+    assert core.required_service() is None
+    assert decision.message == ''
+
+    # Back on the floor, the retry returns.
+    feed(core, now + 20.0, ARMED_READY, height=0.02)
+    core.tick(now + 20.0)
+    assert core.required_service() == 'disarm'
+
+
+def test_disarm_retry_is_rate_limited_to_the_confirmation_timeout():
+    """The retry shares the radio link with the status this guard trusts."""
+    core = supervisor()
+    now = run_autonomy(core)
+    feed(core, now + 1.0, ARMED_FLYING, height=0.40)
+    core.on_key(KeyEvent.LAND, now + 1.0)
+    core.service_result('land', True, now + 1.0)
+    feed(core, now + 4.0, ARMED_READY, height=0.02)
+    core.tick(now + 4.0)
+    core.tick(now + 4.1)
+    assert core.required_service() == 'disarm'
+    core.service_result('disarm', False, now + 4.2)
+
+    period = core.config.disarm_confirmation_timeout_sec
+    requests, t = 0, now + 4.2
+    for _ in range(400):                      # 20 s of 20 Hz ticks
+        t += 0.05
+        feed(core, t, ARMED_READY, height=0.02)
+        core.tick(t)
+        if core.required_service() == 'disarm':
+            requests += 1
+            core.service_result('disarm', False, t)
+    assert requests <= int(20.0 / period) + 1, (
+        f'{requests} disarm requests in 20 s at a {period} s period')
+    assert requests >= 1
+
+
+def test_successful_disarm_is_not_re_requested_while_still_armed():
+    """The guard's original purpose: one successful request is enough."""
+    core = supervisor()
+    now = run_autonomy(core)
+    feed(core, now + 1.0, ARMED_FLYING, height=0.40)
+    core.on_key(KeyEvent.LAND, now + 1.0)
+    core.service_result('land', True, now + 1.0)
+    feed(core, now + 4.0, ARMED_READY, height=0.02)
+    core.tick(now + 4.0)
+    core.tick(now + 4.1)
+    assert core.service_result('disarm', True, now + 4.2) == \
+        'ground disarm commanded'
+
+    # Firmware keeps reporting IS_ARMED; the request must not come back.
+    t = now + 4.2
+    for _ in range(400):
+        t += 0.05
+        feed(core, t, ARMED_READY, height=0.02)
+        core.tick(t)
+        assert core.required_service() is None
+
+
 # ── odometry drift bound ──────────────────────────────────────────────────
 #
 # The Flow deck integrates motion whenever powered and the estimator only

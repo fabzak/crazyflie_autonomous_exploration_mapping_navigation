@@ -50,3 +50,29 @@ def test_real_parameter_files_override_shared_platform_values():
     assert 'layer_ceiling_clearance_m' not in layer_params
     assert 'takeoff_min_height_m' in auto_params
     assert 'takeoff_overshoot_m' in auto_params
+
+
+def test_real_planner_standoff_is_at_least_the_mapping_clearance():
+    """The real profile must not plan closer to a wall than the mapper did.
+
+    layer_explore carves the free space of every saved map with CLEARANCE_M,
+    so a navigator inflating less than that plans through space its own
+    mapper refused.  Left unstated, cf_auto's code default of 4 cells
+    (0.20 m) does exactly that.
+    """
+    import yaml
+
+    from cf_explore.layer_explore import LayerExplorer
+
+    auto_params = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'cf_auto_real.yaml').read_text()
+    )['cf_auto']['ros__parameters']
+    resolution = 0.05
+
+    assert 'inflation_cells' in auto_params, (
+        'cf_auto_real.yaml must state inflation_cells rather than inherit the '
+        'code default')
+    standoff = auto_params['inflation_cells'] * resolution
+    assert standoff >= LayerExplorer.CLEARANCE_M, (
+        f'real profile inflates {standoff:.2f} m but the maps were built with '
+        f'{LayerExplorer.CLEARANCE_M:.2f} m of planning clearance')
