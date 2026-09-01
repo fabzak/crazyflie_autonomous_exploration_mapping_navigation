@@ -47,7 +47,10 @@ which owns the hardware boundary and its safety gates (see
 - Per-altitude occupancy mapping; layer altitudes are **measured in flight**
   from the floor/ceiling planes, not hard-coded.
 - 8-connected A\* that treats unknown cells as untraversable, with obstacle
-  inflation and line-of-sight path simplification.
+  inflation and line-of-sight path simplification. `layer_explore` searches with
+  an unweighted heuristic plus a soft wall-proximity cost; `cf_auto` and
+  `layer_route` use a **weighted** heuristic (`heuristic_weight` 1.1), so their
+  routes are ε-optimal rather than shortest.
 - Static multi-layer 3D routing over the whole saved map stack — the route is
   discrete in `(cell x, cell y, layer)`, and its cost is the metres actually
   flown (horizontal + vertical) with no artificial layer-change penalty.
@@ -58,8 +61,9 @@ which owns the hardware boundary and its safety gates (see
 - Runtime map switching with automatic AMCL reseeding — no second RViz click.
 - Live collision guard on a separate, unfiltered scan topic, plus a last-resort
   vertical bypass for obstacles that are physically present but in no saved map.
-- Landing driven by the down-facing ranger, which refuses to descend on stale
-  data.
+- `cf_auto` lands on the down-facing ranger's measured ground clearance and
+  refuses to descend on stale data. (`layer_explore` lands on odometry altitude
+  plus the Crazyswarm2 `Land` service — the two landing paths differ.)
 - Real-hardware boundary (adapters, safety watchdog, operator keyboard gate)
   kept strictly separate from the simulation path.
 
@@ -83,7 +87,7 @@ requirements.
 ros2_ws/
 ├── map/                       # saved simulation layer maps (the maps cf_auto flies)
 │   └── original_map/          # unedited layer_explore output, kept for reference
-├── map_real/                  # real-hardware maps (currently empty)
+├── map_real/                  # real-hardware maps (only .gitkeep; none saved yet)
 └── src/
     ├── cf_explore/            # the project package
     │   ├── cf_explore/        # nodes and pure algorithm libraries
@@ -109,7 +113,7 @@ as part of normal work on this project.
 - Ubuntu 22.04 with ROS 2 Humble (`ros-humble-desktop`)
 - Gazebo Harmonic and `ros_gz` (`ros-humble-ros-gzharmonic`)
 - `ros-humble-nav2-map-server`, `ros-humble-nav2-amcl`,
-  `ros-humble-nav2-lifecycle-manager` (`cf_auto` only)
+  `ros-humble-nav2-lifecycle-manager` (`cf_auto` and `cf_auto_real`)
 - `python3-numpy`, `python3-scipy`, `python3-yaml`
 - `python3-pynput` — only for the real-hardware operator keyboard. It is
   **not** declared in [`package.xml`](ros2_ws/src/cf_explore/package.xml), so
@@ -169,7 +173,8 @@ height, then repeats `SCAN → SELECT → NAVIGATE` until no reachable frontier
 remains, saves that layer, climbs to the next one, and finally lands.
 
 > **`map_save_dir` matters.** Left at its default the run writes into
-> [`ros2_ws/map/`](ros2_ws/map) and **overwrites the saved navigation maps**
+> [`ros2_ws/map/`](ros2_ws/map) and **overwrites the saved navigation maps** —
+> which are hand-edited and not reproducible. Always point it somewhere else.
 
 Useful arguments: `rviz:=False`, `scan_rotation_angle_deg:=120.0`,
 `scan_yaw_rate:=0.40`, `cruise_speed_mps:=0.80`.
@@ -205,6 +210,11 @@ Saved maps live in [`ros2_ws/map/`](ros2_ws/map), three files per layer:
 | `map_layer_N.yaml` | `resolution`, `origin`, thresholds — read by `nav2_map_server` |
 | `map_layer_N.json` | `z_height`, the authoritative altitude of that layer |
 
+A cell is written occupied when at least **0.30** of the beams that reached it
+ended on it, and the live grid and the saved PGM apply that same rule. This
+beam-evidence ratio is not the YAML's `occupied_thresh`, which is a pixel-shade
+threshold `nav2_map_server` applies when loading the image.
+
 A layer counts only when all three files exist, and layer numbering must be
 contiguous from 1. **Nothing writes the layer count down twice**:
 `cf_auto.launch.py` discovers the stack from the map directory and reads each
@@ -215,12 +225,21 @@ of the algorithm.
 
 > **Example dataset.** The map set committed in `ros2_ws/map/` happens to hold
 > three layers at 0.50 / 1.00 / 1.50 m, 650×650 cells at 0.05 m, origin
-> `(-16.25, -16.25)`. These are the values of this one saved experiment; a
-> different exploration run produces a different stack and needs no code change.
+> `(-16.25, -16.25)`. These are the values of this one saved experiment.
 
-`ros2_ws/map/original_map/` holds the unedited `layer_explore` output; the maps
-in `ros2_ws/map/` have been cleaned up by hand since. `ros2_ws/map_real/` is
-the real-hardware map directory and is currently empty.
+`ros2_ws/map/` holds the simulation maps `cf_auto` flies;
+`ros2_ws/map/original_map/` holds the unedited `layer_explore` output they came
+from. The committed maps are **not** reproducible by re-running mapping: layer 1
+and layer 3 have had their walls closed by hand (1 659 and 1 611 cells moved from
+free to occupied), while layer 2 is byte-identical to the raw output. All three
+are strictly trinary — only 0, 205 and 254 occur.
+
+`ros2_ws/map_real/` is reserved for maps built from the physical environment. It
+currently contains only `.gitkeep`: **no real map has ever been saved.** Both
+real launches read from it, and `layer_catalog.discover_layers` refuses an empty
+or incomplete directory, so `cf_auto_real` cannot start a mission until real maps
+exist there. Simulation maps must not be copied into it: the preflight rejects a
+map image that resolves outside `map_real/`.
 
 At launch, `cf_auto.launch.py` writes corrected copies of each map YAML into
 `$TMPDIR/cf_auto/` with `free_thresh` clamped to 0.196, so that unknown pixels
@@ -294,9 +313,9 @@ Source the ROS environment **first** — without it every test module fails at
 collection with `ModuleNotFoundError: rclpy`, which looks like a broken tree
 and is not.
 
-> Use `pytest`, not `colcon test`. `colcon test` collects only the
-> `unittest.TestCase` classes in `test_colcon_geometry.py` — 33 of the roughly
-> 980 tests — and reports success without running the rest.
+> Use `pytest`, not `colcon test`. `colcon test` collects only the 33
+> `unittest.TestCase` methods in `test_colcon_geometry.py` — out of several
+> hundred — and reports success without running the rest.
 
 The suite is pure unit tests: no ROS graph, no Gazebo, no hardware.
 
@@ -319,12 +338,21 @@ extrinsics attestations as launch arguments, and even then:
   only, enforced independently in `real_operator_control` and
   `real_control_adapter`;
 - every velocity passes a safety watchdog permit and the control adapter's
-  freshness gates;
-- the operator keyboard (`Left Alt` arm/disarm, `G` authorize autonomy,
-  `L` land, `SPACE` emergency motor cut) is the only path from a keypress to
-  motion. `pynput` installs a **global** X11 hook: while the stack runs it
-  captures keys from any window, so do not type anything unrelated while the
-  aircraft is armed.
+  seven freshness/telemetry gates before it becomes a `VelocityWorld` packet;
+- takeoff itself is **not** a forwarded velocity. The adapter runs its own
+  flight state machine and only forwards velocity in `LOW_LEVEL`; the algorithm's
+  first positive `vz` is read as a takeoff request and answered with the
+  Crazyswarm2 `takeoff` service at `takeoff_height_m` (0.20 m in
+  `real_safety.yaml`), after which the adapter switches to forwarding;
+- the operator keyboard is the only path from a keypress to motion: `Alt`
+  (either key) arms, or disarms while grounded (airborne disarm is refused);
+  `G` authorizes
+  autonomy; `L` revokes authorization and lands, latched for the rest of the
+  run; `SPACE` is a latched emergency motor cut — the aircraft drops, it does
+  not land, and clearing it needs a firmware reset and relaunch.
+
+`pynput` installs a **global** X11 hook: while the stack runs it captures keys
+from any window, so do not type anything unrelated while the aircraft is armed.
 
 Because those gates need physical attestations, a real flight is not a single
 copy-pasteable command and none is given here. Inspect
@@ -333,7 +361,11 @@ copy-pasteable command and none is given here. Inspect
 [`launch/cf_auto_real.launch.py`](ros2_ws/src/cf_explore/launch/cf_auto_real.launch.py)
 and [`config/real_safety.yaml`](ros2_ws/src/cf_explore/config/real_safety.yaml)
 before attempting one, and see `--show-args` for the full gate list of either
-real workflow:
+real workflow. In the examples below the `*_rpy` values are the physical
+Multi-Ranger mounting and are checked against it at launch; the `*_xyz` values
+are placeholders — `0,0,0.02` is the *simulated* deck offset, and the launch only
+verifies that you supplied something other than `0,0,0`. Measure the real mount
+offsets before flying.
 
 ```bash
 ros2 launch cf_explore layer_explore_real.launch.py --show-args
@@ -430,31 +462,30 @@ needs operator interaction during a healthy flight.
 
 ### What has actually been flown
 
-**Software capability is not flight evidence.** The physical testing described
-below predates the configuration above and was deliberately bounded; nothing
-here has been re-flown since the mission bounds were removed.
+**Software capability is not flight evidence.** The real profiles are unbounded
+today, and nothing below was flown under them.
 
-Earlier physical testing used `layer_explore` only, on a single layer, in
-**bounded supervised runs**: that configuration set `halt_after_state` so an
-experiment ended at a chosen state before the operator had to react. Flight
-logs are kept locally under `ros2_ws/log/real_flight_*` and are not committed.
+The physical testing that exists used `layer_explore` only, on a single layer, in
+**bounded supervised runs** — that configuration set `halt_after_state`, so an
+experiment ended at a chosen state before the operator had to react. No flight
+log, bag or saved real map from those runs is in this repository, so none of it
+can be re-derived from raw data.
 
-Demonstrated in the air at that time, with logged evidence: radio link and
-telemetry, the Multi-Ranger and TF pipeline, the operator keyboard (arm /
-authorize / land / emergency), takeoff, the room-height probe, the 120° yaw
+Demonstrated in the air at that time: radio link and telemetry, the
+Multi-Ranger and TF pipeline, the operator keyboard (arm / authorize / land /
+emergency), takeoff, the room-height probe, the 120° yaw
 scan, live occupancy updates, the bounded validation hold, and a controlled
 landing followed by disarm — i.e. the chain `TAKEOFF → PROBE → SCAN →
 VALIDATION_HOLD → land → disarmed`. Later supervised runs also exercised
-frontier selection, A\* routing and short navigation legs; treat any claim
-beyond the chain above as provisional unless you have the corresponding log.
+frontier selection, A\* routing and short navigation legs. Treat this as a record
+of what was observed, not as reproducible evidence.
 
 **Never executed on the physical aircraft:** completing a layer, saving a real
-map (`ros2_ws/map_real/` is empty), the climb to a second layer, multi-layer
-real mapping, and the whole of `cf_auto` — real navigation, real map switching
-and real layer transitions, diagonal or vertical. All of these are implemented
-and, since the mission bounds were removed, also **enabled** in the real
-configuration — but they remain **unvalidated on hardware**. Enabled is not
-flown.
+map (`ros2_ws/map_real/` still holds only `.gitkeep`), the climb to a second
+layer, multi-layer real mapping, and the whole of `cf_auto` — real navigation,
+real map switching and real layer transitions, diagonal or vertical. All of these
+are implemented and **enabled** in the real configuration, and all remain
+**unvalidated on hardware**. Enabled is not flown.
 
 ## Known limitations
 
@@ -471,14 +502,26 @@ flown.
 - **Layer altitude follows the terrain.** The firmware's altitude estimate is
   derived from the down-facing ToF sensor, so flying over a raised surface
   raises the aircraft with it and a mapping layer is not a perfectly fixed
-  plane in the room. The mechanism is documented in
-  [`layer_altitude.py`](ros2_ws/src/cf_explore/cf_explore/layer_altitude.py); a
-  compensation prototype lives there but is **off by default** and unflown.
-- **Early exploration can route through unobserved space.** A\* rejects unknown
-  cells and inflates around *known* obstacles, so after only a couple of scans
-  a route can cross space whose obstacles have not been observed yet. On
-  hardware this ended one exploration leg in a collision. It is the main open
-  algorithmic limitation for multi-frontier exploration.
+  plane in the room. A compensation tracker exists in
+  [`layer_altitude.py`](ros2_ws/src/cf_explore/cf_explore/layer_altitude.py),
+  but `layer_altitude_hold_enabled` defaults to `false` and no shipped config
+  sets it, so the mechanism is **inactive**: altitude inside a layer is held by
+  the simulation controller, or by `real_control_adapter` on hardware.
+- **The layer count is fixed after `PROBE`.** Room height is measured once, at
+  the start, and the layer list follows from it; there is no later refinement of
+  that list. What protects the aircraft is the live headroom check in `ASCEND`,
+  which runs before every climb step on every layer and truncates the mission if
+  the roof is closer than `ascend_min_headroom_m`.
+- **Early exploration can route through unobserved space.** In `layer_explore`
+  the distance transform is seeded from *known occupied* cells only, so unknown
+  space is untraversable but generates no inflation margin — after only a couple
+  of scans a route can run right along space whose obstacles have not been
+  observed yet. On hardware this ended one exploration leg in a collision. It is
+  the main open algorithmic limitation for multi-frontier exploration. `cf_auto`
+  and `layer_route` do not share it: there unknown cells are part of the mask
+  that gets inflated, so they carry that workflow's full margin — 0.50 m in
+  simulation, 0.30 m on the real profile, a separate setting from
+  `layer_explore`'s own 0.30 m planning clearance.
 - **Physical coverage is far narrower than simulation coverage** — see
   [Real Crazyflie](#real-crazyflie).
 - Simulation transition points in `cf_auto.yaml` are hand-measured for the
